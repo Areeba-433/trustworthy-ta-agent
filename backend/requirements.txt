@@ -1,0 +1,6 @@
+﻿fastapi
+uvicorn
+langchain
+chromadb
+psycopg2-binary
+python-dotenv
