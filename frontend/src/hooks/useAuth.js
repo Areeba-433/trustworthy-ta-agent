@@ -1,16 +1,11 @@
 import { useAuthContext } from "../context/AuthContext";
 
 export function useAuth() {
-    const { user, token, login, logout, loading } = useAuthContext();
+    const { user, login, logout, loading, isAuthenticated } = useAuthContext();
     return {
-        user,
-        token,
-        login,
-        logout,
-        loading,
-        isAuthenticated: !!token,
-        isAdmin:         user?.role === "admin",
-        isTeacher:       user?.role === "teacher",
-        isStudent:       user?.role === "student",
+        user, login, logout, loading, isAuthenticated,
+        isAdmin:   user?.role === "admin",
+        isTeacher: user?.role === "teacher",
+        isStudent: user?.role === "student",
     };
 }

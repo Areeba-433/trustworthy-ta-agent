@@ -1,22 +1,17 @@
 from sqlalchemy.orm import Session
-from app.models.auditLog import AuditLog
+from app.models.auditLog import AuditLog, AuditAction
 
 class AuditService:
 
     @staticmethod
-    def log(db: Session, action: str, userId: int = None, entityType: str = None,
-            entityId: int = None, oldValues: dict = None, newValues: dict = None,
-            ipAddress: str = None, userAgent: str = None):
-
+    def log(db: Session, action: AuditAction, actorUserId: str = None,
+            targetUserId: str = None, description: str = None, ipAddress: str = None):
         entry = AuditLog(
-            user_id     = userId,
-            action      = action,
-            entity_type = entityType,
-            entity_id   = entityId,
-            old_values  = oldValues,
-            new_values  = newValues,
-            ip_address  = ipAddress,
-            user_agent  = userAgent,
+            actor_user_id  = actorUserId,
+            target_user_id = targetUserId,
+            action         = action,
+            description    = description,
+            ip_address     = ipAddress,
         )
         db.add(entry)
         db.commit()

@@ -1,8 +1,8 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Any
 
 class LoginRequest(BaseModel):
-    email_or_username: str
+    identifier: str
     password: str
     remember_me: bool = False
 
@@ -10,18 +10,18 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 class UserOut(BaseModel):
-    id: int
+    id: str
     email: str
     username: str
     first_name: str
     last_name: str
+    role: str
 
     class Config:
         from_attributes = True
 
-class LoginResponse(BaseModel):
-    access_token: str
-    refresh_token: str
-    token_type: str
-    user: UserOut
-    role: str
+def successResponse(message: str, data: Any = None):
+    return {"success": True, "message": message, "data": data}
+
+def errorResponse(code: str, message: str):
+    return {"success": False, "error": {"code": code, "message": message}}
