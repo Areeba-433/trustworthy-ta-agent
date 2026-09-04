@@ -84,23 +84,26 @@ async def logout(request: Request, response: Response, db: Session = Depends(get
 
 
 @router.post("/refresh")
-async def refreshToken(request: Request, response: Response, db: Session = Depends(getDb)):
-    token = request.cookies.get("refresh_token")
-    if not token:
+async def refreshToken(request: Request, response: Response,
+                       db: Session = Depends(getDb)):
+    oldRefreshToken = request.cookies.get("refresh_token")
+    if not oldRefreshToken:
         raise HTTPException(status_code=401,
                             detail=errorResponse("MISSING_TOKEN", "Refresh token not found"))
 
-    newToken = TokenService.refreshAccessToken(db, token)
-    if not newToken:
+    # Ab dict return hoga — dono tokens
+    tokens = TokenService.refreshAccessToken(db, oldRefreshToken)
+    if not tokens:
         raise HTTPException(status_code=401,
                             detail=errorResponse("INVALID_TOKEN", "Invalid or expired refresh token"))
 
-    # Cookie mein set karo — JS ko expose mat karo
-    response.set_cookie(key="access_token", value=newToken,
+    # Dono cookies update karo — rotation
+    response.set_cookie(key="access_token",  value=tokens["access_token"],
                         httponly=True, secure=True, samesite="lax", max_age=3600)
+    response.set_cookie(key="refresh_token", value=tokens["refresh_token"],
+                        httponly=True, secure=True, samesite="lax", max_age=604800)
 
     return successResponse("Token refreshed")
-
 
 @router.get("/me")
 async def getMe(request: Request, db: Session = Depends(getDb)):
