@@ -7,13 +7,12 @@ token generation for email verification.
 from argon2 import PasswordHasher
 import secrets
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone  # ← ADD timezone
 from typing import Optional
 
 # ============================================================
 # Password Hashing with Argon2id (Direct)
 # ============================================================
-# Using argon2 directly instead of passlib's CryptContext
 _ph = PasswordHasher()
 
 
@@ -88,9 +87,9 @@ def get_token_expiry() -> datetime:
     Get token expiry time (24 hours from now).
     
     Returns:
-        Datetime 24 hours in the future
+        Datetime 24 hours in the future (timezone-aware)
     """
-    return datetime.utcnow() + timedelta(hours=24)
+    return datetime.now(timezone.utc) + timedelta(hours=24)
 
 
 def is_token_expired(expires_at: datetime) -> bool:
@@ -98,9 +97,9 @@ def is_token_expired(expires_at: datetime) -> bool:
     Check if a token has expired.
     
     Args:
-        expires_at: Token expiry datetime
+        expires_at: Token expiry datetime (timezone-aware)
         
     Returns:
         True if token has expired, False otherwise
     """
-    return datetime.utcnow() > expires_at
+    return datetime.now(timezone.utc) > expires_at
