@@ -35,7 +35,7 @@ class Profile(Base):
     expertise = Column(Text, nullable=True)
     bio = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=False)
+    updated_at = updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     
     def __repr__(self):
         return f"<Profile {self.first_name} {self.last_name} for User {self.user_id}>"
