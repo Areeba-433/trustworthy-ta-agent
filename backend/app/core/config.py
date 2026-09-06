@@ -24,9 +24,11 @@ class Settings(BaseSettings):
     JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "dev-secret-key-change-in-production")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 30))
     REFRESH_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("REFRESH_TOKEN_EXPIRE_MINUTES", 43200))
-    
-    # ⬇️ ADD THIS LINE ⬇️
     ALGORITHM: str = os.getenv("ALGORITHM", "HS256")
+    
+    # ⬇️ ADD THESE TWO LINES ⬇️
+    REMEMBER_ME_ACCESS_EXPIRE_MINUTES: int = int(os.getenv("REMEMBER_ME_ACCESS_EXPIRE_MINUTES", 10080))
+    REMEMBER_ME_REFRESH_EXPIRE_MINUTES: int = int(os.getenv("REMEMBER_ME_REFRESH_EXPIRE_MINUTES", 43200))
     
     # Frontend
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173")
