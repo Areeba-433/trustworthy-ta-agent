@@ -1,19 +1,45 @@
+﻿"""
+Main FastAPI application entry point.
+"""
+
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from app.core.middleware.rate_limit import rateLimitMiddleware
-from app.core.middleware.logging import loggingMiddleware
-from app.api import auth
+from app.api.v1.auth import router as auth_router
 
-app = FastAPI(title="Trustworthy TA Agent")
-
-app.middleware("http")(rateLimitMiddleware)
-app.middleware("http")(loggingMiddleware)
-
-app.add_middleware(CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+# Create FastAPI application
+app = FastAPI(
+    title="Trustworthy TA Agent",
+    version="1.0.0",
+    description="AI-powered educational support system with trustworthiness mechanisms",
 )
 
-app.include_router(auth.router)
+# ============================================================
+# Include Routers
+# ============================================================
+
+# Authentication routes (Registration + Login + Logout + Refresh + Me)
+app.include_router(auth_router, prefix="/api/v1")
+
+# Add any other routers here as they are created
+# Example:
+# app.include_router(profile_router, prefix="/api/v1")
+# app.include_router(admin_router, prefix="/api/v1")
+
+# ============================================================
+# Health Check Endpoints
+# ============================================================
+
+@app.get("/")
+async def root():
+    """Root endpoint - API information."""
+    return {
+        "message": "Welcome to Trustworthy TA Agent API",
+        "version": "1.0.0",
+        "docs": "/docs",
+        "health": "/health"
+    }
+
+
+@app.get("/health")
+async def health():
+    """Health check endpoint."""
+    return {"status": "healthy"}
