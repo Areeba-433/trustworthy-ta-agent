@@ -9,7 +9,7 @@ from app.models.email_verification_token import EmailVerificationToken
 
 # Areeba's models
 from app.models.session import Session
-from app.models.auditLog import AuditLog, AuditAction
+from app.models.audit_log import AuditLog, AuditAction
 
 __all__ = [
     # Your models

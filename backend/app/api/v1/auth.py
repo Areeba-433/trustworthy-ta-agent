@@ -328,7 +328,8 @@ async def login(
         httponly=True, secure=True, samesite="lax", max_age=refresh_max_age
     )
 
-    user.last_login = datetime.now(timezone.utc)
+    # ✅ FIXED: Changed last_login to last_login_at
+    user.last_login_at = datetime.now(timezone.utc)
     db.commit()
 
     # Profile se first_name, last_name lo

@@ -139,7 +139,8 @@ def create_access_token(data: dict, expires: Optional[timedelta] = None) -> str:
         "exp": now + expiry,
         "type": "access"
     }
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    # ⬇️ CHANGED: settings.SECRET_KEY → settings.JWT_SECRET_KEY
+    return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
 def create_refresh_token(data: dict, expires: Optional[timedelta] = None) -> str:
@@ -162,7 +163,8 @@ def create_refresh_token(data: dict, expires: Optional[timedelta] = None) -> str
         "exp": now + expiry,
         "type": "refresh"
     }
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    # ⬇️ CHANGED: settings.SECRET_KEY → settings.JWT_SECRET_KEY
+    return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
 def decode_token(token: str) -> Optional[dict]:
@@ -176,6 +178,7 @@ def decode_token(token: str) -> Optional[dict]:
         Decoded payload if valid, None otherwise
     """
     try:
-        return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        # ⬇️ CHANGED: settings.SECRET_KEY → settings.JWT_SECRET_KEY
+        return jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.ALGORITHM])
     except JWTError:
         return None
