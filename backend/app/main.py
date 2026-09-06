@@ -16,8 +16,13 @@ app = FastAPI(
 # Include Routers
 # ============================================================
 
-# Authentication routes
+# Authentication routes (Registration + Login + Logout + Refresh + Me)
 app.include_router(auth_router, prefix="/api/v1")
+
+# Add any other routers here as they are created
+# Example:
+# app.include_router(profile_router, prefix="/api/v1")
+# app.include_router(admin_router, prefix="/api/v1")
 
 # ============================================================
 # Health Check Endpoints

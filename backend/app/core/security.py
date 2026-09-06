@@ -1,18 +1,23 @@
 ﻿"""
-Security utilities for password hashing and token generation.
-This module provides secure password hashing (Argon2id) and
-token generation for email verification.
+Security utilities for password hashing, token generation, and JWT handling.
 """
 
-from argon2 import PasswordHasher
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+from uuid import uuid4
+from passlib.context import CryptContext
+from jose import JWTError, jwt
 import secrets
 import hashlib
-from datetime import datetime, timedelta, timezone  # ← ADD timezone
-from typing import Optional
+
+from app.core.config import settings
 
 # ============================================================
-# Password Hashing with Argon2id (Direct)
+# Password Hashing (Minahil's Version - Argon2id)
 # ============================================================
+
+# Using argon2 directly
+from argon2 import PasswordHasher
 _ph = PasswordHasher()
 
 
@@ -47,14 +52,29 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 # ============================================================
-# Token Generation & Hashing
+# Password Hashing (Areeba's Version - Passlib)
+# ============================================================
+
+pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
+
+
+def hash_password(password: str) -> str:
+    """Hash a password using passlib."""
+    return pwd_context.hash(password)
+
+
+def verify_password_passlib(plain: str, hashed: str) -> bool:
+    """Verify a password using passlib."""
+    return pwd_context.verify(plain, hashed)
+
+
+# ============================================================
+# Token Generation & Hashing (Minahil's Version)
 # ============================================================
 
 def generate_verification_token() -> str:
     """
     Generate a secure random verification token.
-    
-    Uses secrets.token_urlsafe() for cryptographically secure random.
     
     Returns:
         32-byte random token as URL-safe string (43 characters)
@@ -66,21 +86,11 @@ def hash_token(token: str) -> str:
     """
     Hash a token using SHA-256.
     
-    We hash tokens before storing in database.
-    This means even if the database is hacked, raw tokens are safe.
-    
-    Args:
-        token: Raw token to hash
-        
     Returns:
         Hashed token as hex string (64 characters)
     """
     return hashlib.sha256(token.encode()).hexdigest()
 
-
-# ============================================================
-# Token Expiry
-# ============================================================
 
 def get_token_expiry() -> datetime:
     """
@@ -103,3 +113,69 @@ def is_token_expired(expires_at: datetime) -> bool:
         True if token has expired, False otherwise
     """
     return datetime.now(timezone.utc) > expires_at
+
+
+# ============================================================
+# JWT Token Functions (Areeba's Version)
+# ============================================================
+
+def create_access_token(data: dict, expires: Optional[timedelta] = None) -> str:
+    """
+    Create a JWT access token.
+    
+    Args:
+        data: Dictionary with user data (sub, role)
+        expires: Optional custom expiry time
+        
+    Returns:
+        JWT token string
+    """
+    expiry = expires or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    now = datetime.now(timezone.utc)
+    payload = {
+        **data,
+        "jti": str(uuid4()),
+        "iat": now,
+        "exp": now + expiry,
+        "type": "access"
+    }
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+
+def create_refresh_token(data: dict, expires: Optional[timedelta] = None) -> str:
+    """
+    Create a JWT refresh token.
+    
+    Args:
+        data: Dictionary with user data (sub, role)
+        expires: Optional custom expiry time
+        
+    Returns:
+        JWT token string
+    """
+    expiry = expires or timedelta(minutes=settings.REFRESH_TOKEN_EXPIRE_MINUTES)
+    now = datetime.now(timezone.utc)
+    payload = {
+        **data,
+        "jti": str(uuid4()),
+        "iat": now,
+        "exp": now + expiry,
+        "type": "refresh"
+    }
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+
+def decode_token(token: str) -> Optional[dict]:
+    """
+    Decode and verify a JWT token.
+    
+    Args:
+        token: JWT token string
+        
+    Returns:
+        Decoded payload if valid, None otherwise
+    """
+    try:
+        return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    except JWTError:
+        return None
