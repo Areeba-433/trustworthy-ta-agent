@@ -1,10 +1,10 @@
 from pydantic import BaseModel
-from pydantic.config import ConfigDict
-from typing import Optional, Any
+from pydantic import ConfigDict
+from typing import Any
 
 class LoginRequest(BaseModel):
-    identifier: str
-    password: str
+    identifier:  str
+    password:    str
     remember_me: bool = False
 
 class RefreshRequest(BaseModel):
@@ -12,16 +12,13 @@ class RefreshRequest(BaseModel):
 
 class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+    id:         str
+    email:      str
+    username:   str
+    role:       str
 
-    id: str
-    email: str
-    username: str
-    first_name: str
-    last_name: str
-    role: str
-
-def successResponse(message: str, data: Any = None):
+def success_response(message: str, data: Any = None):
     return {"success": True, "message": message, "data": data}
 
-def errorResponse(code: str, message: str):
+def error_response(code: str, message: str):
     return {"success": False, "error": {"code": code, "message": message}}

@@ -11,7 +11,6 @@ class Settings(BaseSettings):
     REMEMBER_ME_REFRESH_EXPIRE_MINUTES: int = 43200
     SESSION_INACTIVITY_MINUTES:         int = 30
 
-    # Pydantic V2 syntax — class Config deprecated
-    model_config = SettingsConfigDict(env_file=".env")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 settings = Settings()

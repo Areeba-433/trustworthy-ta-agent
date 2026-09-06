@@ -4,7 +4,7 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import uuid
 import enum
-from app.db.database import Base
+from app.core.database import Base 
 
 class AuditAction(str, enum.Enum):
     # Auth
