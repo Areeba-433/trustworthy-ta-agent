@@ -328,11 +328,10 @@ async def login(
         httponly=True, secure=True, samesite="lax", max_age=refresh_max_age
     )
 
-    # ✅ FIXED: Changed last_login to last_login_at
     user.last_login_at = datetime.now(timezone.utc)
     db.commit()
 
-    # Profile se first_name, last_name lo
+    # Get profile
     profile = db.query(Profile).filter(Profile.user_id == user.id).first()
 
     AuditService.log(
@@ -421,11 +420,19 @@ async def get_me(
     request: Request, 
     db: Session = Depends(get_db)
 ):
-    """Get current user info."""
+    """
+    Get current user info.
+    
+    Returns the authenticated user's information along with their profile data.
+    Matches Database Specification: Table 1 (users) and Table 2 (profiles).
+    """
     
     user    = await get_current_user(request, db)
     profile = db.query(Profile).filter(Profile.user_id == user.id).first()
 
+    # ✅ FIXED: Removed phone_number, enrollment_year, semester, cgpa
+    # These fields don't exist in the Profile model
+    # Matches Database Specification: Table 2 - profiles
     return success_response("User fetched", {
         "id":         str(user.id),
         "email":      user.email,
@@ -433,12 +440,12 @@ async def get_me(
         "first_name": profile.first_name if profile else None,
         "last_name":  profile.last_name  if profile else None,
         "role":       user.role.name,
+        "is_active":  user.is_active,
+        "is_verified": user.is_verified,
         "profile": {
-            "phone_number":    profile.phone_number    if profile else None,
-            "department":      profile.department      if profile else None,
-            "expertise":       profile.expertise       if profile else [],
-            "enrollment_year": profile.enrollment_year if profile else None,
-            "semester":        profile.semester        if profile else None,
-            "cgpa":  float(profile.cgpa) if profile and profile.cgpa else None,
+            "department":      profile.department if profile else None,
+            "expertise":       profile.expertise if profile else None,
+            "bio":             profile.bio if profile else None,
+            "profile_picture_url": profile.profile_picture_url if profile else None,
         }
     })
