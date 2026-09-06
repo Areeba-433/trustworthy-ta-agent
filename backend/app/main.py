@@ -3,6 +3,7 @@ Main FastAPI application entry point.
 """
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.auth import router as auth_router
 
 # Create FastAPI application
@@ -13,16 +14,27 @@ app = FastAPI(
 )
 
 # ============================================================
+# CORS Configuration (ADD THIS!)
+# ============================================================
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ============================================================
 # Include Routers
 # ============================================================
 
-# Authentication routes (Registration + Login + Logout + Refresh + Me)
 app.include_router(auth_router, prefix="/api/v1")
-
-# Add any other routers here as they are created
-# Example:
-# app.include_router(profile_router, prefix="/api/v1")
-# app.include_router(admin_router, prefix="/api/v1")
 
 # ============================================================
 # Health Check Endpoints
@@ -37,7 +49,6 @@ async def root():
         "docs": "/docs",
         "health": "/health"
     }
-
 
 @app.get("/health")
 async def health():
