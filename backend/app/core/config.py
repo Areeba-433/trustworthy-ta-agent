@@ -26,9 +26,12 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("REFRESH_TOKEN_EXPIRE_MINUTES", 43200))
     ALGORITHM: str = os.getenv("ALGORITHM", "HS256")
     
-    # ⬇️ ADD THESE TWO LINES ⬇️
+    # Remember Me Settings
     REMEMBER_ME_ACCESS_EXPIRE_MINUTES: int = int(os.getenv("REMEMBER_ME_ACCESS_EXPIRE_MINUTES", 10080))
     REMEMBER_ME_REFRESH_EXPIRE_MINUTES: int = int(os.getenv("REMEMBER_ME_REFRESH_EXPIRE_MINUTES", 43200))
+    
+    # ⬇️ ADD THIS LINE ⬇️
+    SESSION_INACTIVITY_MINUTES: int = int(os.getenv("SESSION_INACTIVITY_MINUTES", 30))
     
     # Frontend
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173")
