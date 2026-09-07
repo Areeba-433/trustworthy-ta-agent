@@ -5,6 +5,7 @@ Models package - exports all models for easier imports.
 # Your models
 from app.models.user import User, UserRole
 from app.models.profile import Profile
+from app.models.password_reset_token import PasswordResetToken
 from app.models.email_verification_token import EmailVerificationToken
 
 # Areeba's models

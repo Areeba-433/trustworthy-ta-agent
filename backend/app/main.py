@@ -3,6 +3,7 @@ Main FastAPI application entry point.
 """
 
 from fastapi import FastAPI
+from app.api.v1 import router as api_v1_router
 from app.api.v1.auth import router as auth_router
 
 # Create FastAPI application
@@ -16,13 +17,12 @@ app = FastAPI(
 # Include Routers
 # ============================================================
 
-# Authentication routes (Registration + Login + Logout + Refresh + Me)
-app.include_router(auth_router, prefix="/api/v1")
+# Option 1: Use the combined router (Recommended)
+# This includes all routes from auth, users, admin, etc.
+app.include_router(api_v1_router, prefix="/api/v1")
 
-# Add any other routers here as they are created
-# Example:
-# app.include_router(profile_router, prefix="/api/v1")
-# app.include_router(admin_router, prefix="/api/v1")
+# Option 2: Individual routers (Alternative)
+# app.include_router(auth_router, prefix="/api/v1")
 
 # ============================================================
 # Health Check Endpoints
