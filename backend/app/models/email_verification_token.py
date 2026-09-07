@@ -1,3 +1,4 @@
+
 """
 EmailVerificationToken model - represents the 'email_verification_tokens' table.
 Stores hashed verification tokens for email verification.

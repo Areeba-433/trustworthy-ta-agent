@@ -20,15 +20,34 @@ async def get_users(page: int = 1, limit: int = 20,
                     admin: User = Depends(require_role("ADMIN")),
                     db: Session = Depends(get_db)):
     query = db.query(User)
+    
     if search:
-        query = query.filter(User.email.ilike(f"%{search}%"))
+        query = query.filter(
+            (User.username.ilike(f"%{search}%")) |
+            (User.email.ilike(f"%{search}%"))
+        )
+    
     if role:
         query = query.filter(User.role == role)
+    
+    # ✅ FIX: Add status filter
+    if status:
+        if status.lower() == "active":
+            query = query.filter(User.is_active == True)
+        elif status.lower() == "inactive":
+            query = query.filter(User.is_active == False)
+    
     total = query.count()
     users = query.offset((page-1)*limit).limit(limit).all()
+    
     return success_response("Users fetched", {
-        "users": [{"id": str(u.id), "email": u.email, "username": u.username,
-                   "role": u.role.name, "is_active": u.is_active} for u in users],
+        "users": [{
+            "id": str(u.id),
+            "email": u.email,
+            "username": u.username,
+            "role": u.role.name,
+            "is_active": u.is_active
+        } for u in users],
         "pagination": {"page": page, "limit": limit, "total": total}
     })
 
