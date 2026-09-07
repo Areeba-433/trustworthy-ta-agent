@@ -7,6 +7,7 @@ from app.models.user import User, UserRole
 from app.models.profile import Profile
 from app.models.password_reset_token import PasswordResetToken
 from app.models.email_verification_token import EmailVerificationToken
+from app.models.password_reset_token import PasswordResetToken  # ← ADD THIS!
 
 # Areeba's models
 from app.models.session import Session
@@ -18,6 +19,7 @@ __all__ = [
     "UserRole",
     "Profile",
     "EmailVerificationToken",
+    "PasswordResetToken",  # ← ADD THIS!
     # Areeba's models
     "Session",
     "AuditLog",
