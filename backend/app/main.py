@@ -4,6 +4,8 @@ Main FastAPI application entry point.
 
 from fastapi import FastAPI
 from app.api.v1.auth import router as auth_router
+from app.api.v1.admin import router as admin_router
+
 
 # Create FastAPI application
 app = FastAPI(
@@ -43,3 +45,5 @@ async def root():
 async def health():
     """Health check endpoint."""
     return {"status": "healthy"}
+
+app.include_router(admin_router, prefix="/api/v1")
