@@ -10,7 +10,7 @@ import re
 from datetime import datetime, timezone
 
 # ============================================================
-# Imports (Combined)
+# Imports
 # ============================================================
 
 # Your imports
@@ -24,18 +24,17 @@ from app.core.security import (
     is_token_expired,
 )
 from app.models import User, UserRole, Profile, EmailVerificationToken
-from app.services.email_service import send_verification_email
+from app.services.email_service import send_verification_email, send_password_reset_email
 
 # Areeba's imports
 from app.core.middleware.auth import get_current_user
 from app.services.token_service import TokenService
 from app.services.audit_service import AuditService
 from app.models.audit_log import AuditAction
-from app.schemas.auth import LoginRequest, success_response, error_response
-
+from app.schemas.auth import LoginRequest, success_response, error_response, ForgotPasswordRequest, ResetPasswordRequest
 
 # ============================================================
-# Pydantic Schemas (Your Registration Schemas)
+# Pydantic Schemas (Registration)
 # ============================================================
 
 class RegisterRequest(BaseModel):
@@ -87,7 +86,7 @@ router = APIRouter(prefix="/auth", tags=["authentication"])
 
 
 # ============================================================
-# YOUR ENDPOINTS (Registration & Verification)
+# REGISTRATION & VERIFICATION ENDPOINTS
 # ============================================================
 
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
@@ -267,7 +266,70 @@ async def verify_email(
 
 
 # ============================================================
-# AREEBA'S ENDPOINTS (Login, Logout, Refresh, Me)
+# PASSWORD RESET ENDPOINTS (NEW)
+# ============================================================
+
+@router.post("/forgot-password")
+async def forgot_password(
+    request: ForgotPasswordRequest,
+    db: Session = Depends(get_db)
+):
+    """Request password reset email."""
+    from app.services.auth_service import AuthService
+    
+    user = db.query(User).filter(User.email == request.email).first()
+    
+    if user:
+        auth_service = AuthService(db)
+        token = auth_service.create_password_reset_token(str(user.id))
+        send_password_reset_email(user.email, token)
+    
+    return {
+        "success": True,
+        "message": "If an account exists for this email, password reset instructions have been sent."
+    }
+
+
+@router.post("/reset-password")
+async def reset_password(
+    request: ResetPasswordRequest,
+    db: Session = Depends(get_db)
+):
+    """Reset password using token."""
+    from app.services.auth_service import AuthService
+    
+    try:
+        auth_service = AuthService(db)
+        auth_service.reset_password(request.token, request.new_password)
+        return {
+            "success": True,
+            "message": "Password reset successful"
+        }
+    except ValueError as e:
+        error_msg = str(e)
+        code = "RESET_ERROR"
+        
+        if "Invalid reset token" in error_msg:
+            code = "INVALID_RESET_TOKEN"
+        elif "Reset token expired" in error_msg:
+            code = "RESET_TOKEN_EXPIRED"
+        elif "Token already used" in error_msg:
+            code = "TOKEN_ALREADY_USED"
+        
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "success": False,
+                "error": {
+                    "code": code,
+                    "message": error_msg
+                }
+            }
+        )
+
+
+# ============================================================
+# LOGIN, LOGOUT, REFRESH, ME
 # ============================================================
 
 @router.post("/login")
@@ -331,7 +393,6 @@ async def login(
     user.last_login_at = datetime.now(timezone.utc)
     db.commit()
 
-    # Get profile
     profile = db.query(Profile).filter(Profile.user_id == user.id).first()
 
     AuditService.log(
@@ -404,15 +465,26 @@ async def refresh_token(
         )
 
     response.set_cookie(
-        key="access_token", value=tokens["access_token"],
-        httponly=True, secure=True, samesite="lax", max_age=3600
+        key="access_token", 
+        value=tokens["access_token"],
+        httponly=True, 
+        secure=True, 
+        samesite="lax", 
+        max_age=3600
     )
     response.set_cookie(
-        key="refresh_token", value=tokens["refresh_token"],
-        httponly=True, secure=True, samesite="lax", max_age=604800
+        key="refresh_token", 
+        value=tokens["refresh_token"],
+        httponly=True, 
+        secure=True, 
+        samesite="lax", 
+        max_age=604800
     )
 
-    return success_response("Token refreshed")
+    return success_response("Token refreshed", {
+        "access_token": tokens["access_token"],
+        "refresh_token": tokens["refresh_token"]
+    })
 
 
 @router.get("/me")
@@ -423,16 +495,15 @@ async def get_me(
     """
     Get current user info.
     
-    Returns the authenticated user's information along with their profile data.
+    Returns user data with profile information.
     Matches Database Specification: Table 1 (users) and Table 2 (profiles).
     """
     
     user    = await get_current_user(request, db)
     profile = db.query(Profile).filter(Profile.user_id == user.id).first()
 
-    # ✅ FIXED: Removed phone_number, enrollment_year, semester, cgpa
-    # These fields don't exist in the Profile model
-    # Matches Database Specification: Table 2 - profiles
+    # ✅ FIXED: Removed non-existent fields
+    # Matches your Profile model
     return success_response("User fetched", {
         "id":         str(user.id),
         "email":      user.email,
@@ -443,9 +514,9 @@ async def get_me(
         "is_active":  user.is_active,
         "is_verified": user.is_verified,
         "profile": {
-            "department":      profile.department if profile else None,
-            "expertise":       profile.expertise if profile else None,
-            "bio":             profile.bio if profile else None,
+            "department": profile.department if profile else None,
+            "expertise":  profile.expertise if profile else None,
+            "bio":        profile.bio if profile else None,
             "profile_picture_url": profile.profile_picture_url if profile else None,
         }
     })

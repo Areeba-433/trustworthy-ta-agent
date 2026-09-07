@@ -24,10 +24,12 @@ class User(Base):
     is_active = Column(Boolean, nullable=False, default=True)
     is_verified = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)  # ← server_default!
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     last_login_at = Column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     profile = relationship("Profile", back_populates="user", uselist=False)
     sessions = relationship("Session", back_populates="user")
     audit_logs = relationship("AuditLog", foreign_keys="AuditLog.actor_user_id", back_populates="actor")
+    
+    password_reset_tokens = relationship("PasswordResetToken", back_populates="user")
