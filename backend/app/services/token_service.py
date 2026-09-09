@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 from app.models.session import Session as SessionModel
-from app.core.security import create_access_token, create_refresh_token, decode_token
+from app.core.security import create_access_token, create_refresh_token, decode_token, hash_token
 from app.core.config import settings
 
 class TokenService:
@@ -26,7 +26,7 @@ class TokenService:
         session = SessionModel(
             user_id=user_id,
             token_jti=access_payload["jti"],
-            refresh_token_hash=refresh_token,
+            refresh_token_hash=hash_token(refresh_token),
             remember_me=remember_me,
             ip_address=ip,
             user_agent=user_agent,
@@ -72,14 +72,15 @@ class TokenService:
         if not payload or payload.get("type") != "refresh":
             return None
 
+        old_refresh_hash = hash_token(old_refresh_token)
         session = db.query(SessionModel).filter(
-            SessionModel.refresh_token_hash == old_refresh_token,
+            SessionModel.refresh_token_hash == old_refresh_hash,
             SessionModel.revoked_at.is_(None)
         ).first()
 
         if not session:
             compromised = db.query(SessionModel).filter(
-                SessionModel.refresh_token_hash == old_refresh_token
+                SessionModel.refresh_token_hash == old_refresh_hash
             ).first()
             if compromised:
                 TokenService.revoke_all_sessions(db, str(compromised.user_id))
@@ -96,7 +97,7 @@ class TokenService:
         refresh_payload = decode_token(new_refresh)
 
         session.token_jti = new_payload["jti"]
-        session.refresh_token_hash = new_refresh
+        session.refresh_token_hash = hash_token(new_refresh)
         session.last_activity_at = datetime.now(timezone.utc)
         db.commit()
         return {"access_token": new_access, "refresh_token": new_refresh}
