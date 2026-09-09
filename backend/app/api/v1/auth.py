@@ -59,9 +59,10 @@ class RegisterRequest(BaseModel):
     
     @validator('role')
     def validate_role(cls, v):
-        """Validate role is valid."""
-        if v not in ["STUDENT", "TEACHER"]:
-            raise ValueError('Role must be STUDENT or TEACHER')
+        """Public registration is STUDENT-only. Teacher accounts are
+        granted by an administrator via PATCH /admin/users/{id}/role."""
+        if v != "STUDENT":
+            raise ValueError('Public registration only supports the STUDENT role. Teacher accounts are granted by an administrator.')
         return v
 
 

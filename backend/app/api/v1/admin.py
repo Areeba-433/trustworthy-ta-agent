@@ -3,12 +3,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.rbac import require_role
-from app.models.user import User
 from app.models.audit_log import AuditAction
 from app.services.token_service import TokenService
 from app.services.audit_service import AuditService
-from app.schemas.admin import UpdateStatusRequest
 from app.schemas.auth import success_response, error_response
+from app.models.user import User, UserRole
+from app.schemas.admin import UpdateStatusRequest, UpdateRoleRequest
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -68,3 +68,21 @@ async def update_status(user_id: str, body: UpdateStatusRequest,
     AuditService.log(db, action=action, actor_user_id=str(admin.id), target_user_id=str(target.id))
     db.commit()
     return success_response("User status updated", {"user": {"id": str(target.id), "is_active": target.is_active}})
+
+
+@router.patch("/users/{user_id}/role")
+async def update_role(user_id: str, body: UpdateRoleRequest,
+                       admin: User = Depends(require_role("ADMIN")),
+                       db: Session = Depends(get_db)):
+    target = db.query(User).filter(User.id == user_id).first()
+    if not target:
+        raise HTTPException(404, detail=error_response("USER_NOT_FOUND", "User not found"))
+
+    if target.role == UserRole.TEACHER:
+        raise HTTPException(400, detail=error_response("ALREADY_TEACHER", "User is already a teacher"))
+
+    target.role = UserRole.TEACHER
+
+    AuditService.log(db, action=AuditAction.ROLE_CHANGED, actor_user_id=str(admin.id), target_user_id=str(target.id))
+    db.commit()
+    return success_response("User promoted to teacher", {"user": {"id": str(target.id), "role": target.role.name}})
