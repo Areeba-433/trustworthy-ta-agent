@@ -26,7 +26,6 @@ from app.core.security import (
 from app.models import User, UserRole, Profile, EmailVerificationToken
 from app.services.email_service import send_verification_email, send_password_reset_email
 
-# Areeba's imports
 from app.core.middleware.auth import get_current_user
 from app.services.token_service import TokenService
 from app.services.audit_service import AuditService
