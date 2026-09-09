@@ -40,8 +40,12 @@ class TokenService:
 
     @staticmethod
     def invalidate_session(db: Session, token: str):
+        payload = decode_token(token)
+        if not payload:
+            return
+        jti = payload.get("jti")
         session = db.query(SessionModel).filter(
-            SessionModel.token_jti == token
+            SessionModel.token_jti == jti
         ).first()
         if session:
             session.revoked_at = datetime.now(timezone.utc)
