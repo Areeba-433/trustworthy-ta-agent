@@ -1,4 +1,5 @@
-from fastapi import Request, HTTPException, status
+from fastapi import Request, status
+from fastapi.responses import JSONResponse
 from datetime import datetime, timedelta, timezone
 from app.core.security import decode_token
 
@@ -40,9 +41,9 @@ async def rate_limit_middleware(request: Request, call_next):
         _store[key] = []
 
     if len(_store[key]) >= max_calls:
-        raise HTTPException(
+        return JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail={"success": False, "error": {
+            content={"success": False, "error": {
                 "code": "RATE_LIMITED",
                 "message": f"Too many requests. Max {max_calls} per {window}s."
             }}
