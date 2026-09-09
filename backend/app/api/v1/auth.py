@@ -8,6 +8,7 @@ from pydantic import BaseModel, EmailStr, Field, validator
 from typing import Optional
 import re
 from datetime import datetime, timezone
+from app.core.config import settings
 
 # ============================================================
 # Imports
@@ -382,11 +383,11 @@ async def login(
 
     response.set_cookie(
         key="access_token", value=tokens["access_token"],
-        httponly=True, secure=True, samesite="lax", max_age=access_max_age
+        httponly=True, secure=not settings.DEBUG, samesite="lax", max_age=access_max_age
     )
     response.set_cookie(
         key="refresh_token", value=tokens["refresh_token"],
-        httponly=True, secure=True, samesite="lax", max_age=refresh_max_age
+        httponly=True, secure=not settings.DEBUG, samesite="lax", max_age=refresh_max_age
     )
 
     user.last_login_at = datetime.now(timezone.utc)
@@ -467,7 +468,7 @@ async def refresh_token(
         key="access_token", 
         value=tokens["access_token"],
         httponly=True, 
-        secure=True, 
+        secure=not settings.DEBUG, 
         samesite="lax", 
         max_age=3600
     )
@@ -475,7 +476,7 @@ async def refresh_token(
         key="refresh_token", 
         value=tokens["refresh_token"],
         httponly=True, 
-        secure=True, 
+        secure=not settings.DEBUG, 
         samesite="lax", 
         max_age=604800
     )
