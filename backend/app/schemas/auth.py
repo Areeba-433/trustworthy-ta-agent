@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, validator
 from pydantic import ConfigDict
 from typing import Any
 import re
@@ -34,7 +34,7 @@ class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str = Field(..., min_length=8)
 
-    @classmethod
+    @validator('new_password')
     def validate_password(cls, v: str) -> str:
         """Validate password strength."""
         if not re.search(r'[A-Z]', v):
