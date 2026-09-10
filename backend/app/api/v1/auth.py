@@ -149,7 +149,8 @@ async def register(
     profile = Profile(
         user_id=user.id,
         first_name=request.first_name,
-        last_name=request.last_name
+        last_name=request.last_name,
+        updated_at=datetime.now(timezone.utc),
     )
     db.add(profile)
     db.flush()

@@ -9,6 +9,7 @@ Usage:
 
 import os
 import sys
+from datetime import datetime, timezone
 
 # Ensure backend root is on sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -64,6 +65,7 @@ def seed_admin():
                 last_name=last_name,
                 department="Administration",
                 expertise="System Management",
+                updated_at=datetime.now(timezone.utc),
             )
             db.add(profile)
             db.commit()
