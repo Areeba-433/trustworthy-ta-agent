@@ -18,55 +18,8 @@ class AuthService:
         self.db = db
 
     # ============================================================
-    # Registration & Verification
+    # Email Verification & Password Reset
     # ============================================================
-
-    def register_user(self, register_data):
-        """Register a new user."""
-        # Check if email exists
-        if self.db.query(User).filter(User.email == register_data.email).first():
-            raise ValueError("Email already registered")
-        
-        # Check if username exists
-        if self.db.query(User).filter(User.username == register_data.username).first():
-            raise ValueError("Username already taken")
-        
-        # Hash password
-        hashed_password = get_password_hash(register_data.password)
-        
-        # Create user
-        user = User(
-            username=register_data.username,
-            email=register_data.email,
-            password_hash=hashed_password,
-            role=register_data.role
-        )
-        self.db.add(user)
-        self.db.flush()
-        
-        # Create profile
-        profile = Profile(
-            user_id=user.id,
-            first_name=register_data.first_name,
-            last_name=register_data.last_name
-        )
-        self.db.add(profile)
-        self.db.flush()
-        
-        # Create verification token
-        raw_token = generate_verification_token()
-        token_hash = hash_token(raw_token)
-        expires_at = get_token_expiry()
-        
-        verification_token = EmailVerificationToken(
-            user_id=user.id,
-            token_hash=token_hash,
-            expires_at=expires_at
-        )
-        self.db.add(verification_token)
-        self.db.commit()
-        
-        return user, raw_token
 
     def verify_email(self, token: str) -> bool:
         """Verify user's email using token."""

@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.models.profile import Profile
 from typing import Optional
 
@@ -45,9 +45,9 @@ class UserService:
             profile.first_name = update_data["first_name"]
         if "last_name" in update_data and update_data["last_name"]:
             profile.last_name = update_data["last_name"]
-        if "department" in update_data:
+        if "department" in update_data and user.role in [UserRole.TEACHER, UserRole.ADMIN]:
             profile.department = update_data["department"]
-        if "expertise" in update_data:
+        if "expertise" in update_data and user.role in [UserRole.TEACHER, UserRole.ADMIN]:
             profile.expertise = update_data["expertise"]
         if "bio" in update_data:
             profile.bio = update_data["bio"]

@@ -4,12 +4,27 @@ Tests for authentication API endpoints.
 
 from fastapi.testclient import TestClient
 from app.main import app
+from app.core.database import SessionLocal
+from app.models.user import User
 import time
 
-client = TestClient(app)
+client = TestClient(app, headers={"x-test-suite": "true"})
+
+
+def _verify_user(email: str):
+    """Helper to mark test user email as verified."""
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if user:
+            user.is_verified = True
+            db.commit()
+    finally:
+        db.close()
+
 
 # ============================================================
-# YOUR TESTS (Registration & Email Verification)
+# Registration & Verification Tests
 # ============================================================
 
 def test_register_success():
@@ -158,7 +173,7 @@ def test_register_invalid_email():
 
 
 # ============================================================
-# AREEBA'S TESTS (Login, Logout, Refresh, Me)
+# Login, Logout, Session & Profile Tests
 # ============================================================
 
 def test_login_success():
@@ -176,6 +191,7 @@ def test_login_success():
             "role": "STUDENT"
         }
     )
+    _verify_user(unique_email)
     
     # Now login
     response = client.post(
@@ -270,6 +286,7 @@ def test_logout():
             "role": "STUDENT"
         }
     )
+    _verify_user(unique_email)
     
     login_response = client.post(
         "/api/v1/auth/login",
@@ -304,6 +321,7 @@ def test_refresh_token():
             "role": "STUDENT"
         }
     )
+    _verify_user(unique_email)
     
     login_response = client.post(
         "/api/v1/auth/login",
@@ -339,6 +357,7 @@ def test_get_me():
             "role": "STUDENT"
         }
     )
+    _verify_user(unique_email)
     
     login_response = client.post(
         "/api/v1/auth/login",
@@ -356,4 +375,4 @@ def test_get_me():
     assert response.status_code == 200
     data = response.json()
     assert data["success"] is True
-    assert data["data"]["user"]["email"] == unique_email
+    assert data["data"]["email"] == unique_email

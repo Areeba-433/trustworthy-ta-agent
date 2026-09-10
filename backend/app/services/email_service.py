@@ -2,10 +2,14 @@
 Email service for sending emails.
 """
 
-from app.core.config import settings
+import logging
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+
+from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 def send_email(to_email: str, subject: str, html_content: str):
@@ -24,7 +28,7 @@ def send_email(to_email: str, subject: str, html_content: str):
             server.send_message(msg)
         return True
     except Exception as e:
-        print(f"❌ Failed to send email: {e}")
+        logger.error(f"Failed to send email to {to_email}: {e}")
         return False
 
 

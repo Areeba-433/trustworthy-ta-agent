@@ -1,11 +1,10 @@
-﻿"""
+"""
 Security utilities for password hashing, token generation, and JWT handling.
 """
 
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import uuid4
-from passlib.context import CryptContext
 from jose import JWTError, jwt
 import secrets
 import hashlib
@@ -13,10 +12,9 @@ import hashlib
 from app.core.config import settings
 
 # ============================================================
-# Password Hashing (Minahil's Version - Argon2id)
+# Password Hashing (Argon2id)
 # ============================================================
 
-# Using argon2 directly
 from argon2 import PasswordHasher
 _ph = PasswordHasher()
 
@@ -52,24 +50,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 # ============================================================
-# Password Hashing (Areeba's Version - Passlib)
-# ============================================================
-
-pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
-
-
-def hash_password(password: str) -> str:
-    """Hash a password using passlib."""
-    return pwd_context.hash(password)
-
-
-def verify_password_passlib(plain: str, hashed: str) -> bool:
-    """Verify a password using passlib."""
-    return pwd_context.verify(plain, hashed)
-
-
-# ============================================================
-# Token Generation & Hashing (Minahil's Version)
+# Token Generation & Hashing (SHA-256)
 # ============================================================
 
 def generate_verification_token() -> str:
@@ -116,7 +97,7 @@ def is_token_expired(expires_at: datetime) -> bool:
 
 
 # ============================================================
-# JWT Token Functions (Areeba's Version)
+# JWT Token Handling
 # ============================================================
 
 def create_access_token(data: dict, expires: Optional[timedelta] = None) -> str:

@@ -1,11 +1,14 @@
-from fastapi import Request, HTTPException, status
+from datetime import datetime, timezone, timedelta
+from fastapi import Request, HTTPException, status, Depends
 from sqlalchemy.orm import Session
 from app.core.security import decode_token
+from app.core.database import get_db
+from app.core.config import settings
 from app.models.user import User
 from app.models.session import Session as SessionModel
 
 
-async def get_current_user(request: Request, db: Session):
+async def get_current_user(request: Request, db: Session = Depends(get_db)):
     """
     Get current user from JWT token.
     
@@ -78,12 +81,9 @@ async def get_current_user(request: Request, db: Session):
         )
 
     # 6. Check if session exists and is valid
-    # ✅ FIXED: Changed SessionModel.jti to SessionModel.token_jti
-    # ✅ FIXED: Removed SessionModel.is_active (not in schema)
-    # Matches Database Specification: Table 3 - sessions
     session = db.query(SessionModel).filter(
-        SessionModel.token_jti == jti,  # ← Fixed: jti → token_jti
-        SessionModel.revoked_at.is_(None)  # ← Session revocation via revoked_at
+        SessionModel.token_jti == jti,
+        SessionModel.revoked_at.is_(None)
     ).first()
     
     if not session:
@@ -93,5 +93,37 @@ async def get_current_user(request: Request, db: Session):
                 "code": "SESSION_EXPIRED", "message": "Session expired"
             }}
         )
+
+    now = datetime.now(timezone.utc)
+
+    # 7. Check if session itself has expired
+    if session.expires_at:
+        exp_at = session.expires_at.replace(tzinfo=timezone.utc) if session.expires_at.tzinfo is None else session.expires_at
+        if exp_at < now:
+            session.revoked_at = now
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"success": False, "error": {
+                    "code": "SESSION_EXPIRED", "message": "Session expired"
+                }}
+            )
+
+    # 8. Check inactivity timeout (30 minutes default)
+    if session.last_activity_at:
+        last_active = session.last_activity_at.replace(tzinfo=timezone.utc) if session.last_activity_at.tzinfo is None else session.last_activity_at
+        if now - last_active > timedelta(minutes=settings.SESSION_INACTIVITY_MINUTES):
+            session.revoked_at = now
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"success": False, "error": {
+                    "code": "SESSION_EXPIRED", "message": "Session expired due to inactivity"
+                }}
+            )
+
+    # 9. Update last activity
+    session.last_activity_at = now
+    db.commit()
 
     return user

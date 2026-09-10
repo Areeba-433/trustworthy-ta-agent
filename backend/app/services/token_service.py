@@ -91,13 +91,24 @@ class TokenService:
             db.commit()
             return None
 
-        new_access = create_access_token({"sub": payload["sub"], "role": payload.get("role")})
-        new_refresh = create_refresh_token({"sub": payload["sub"], "role": payload.get("role")})
+        if session.remember_me:
+            access_exp = timedelta(minutes=settings.REMEMBER_ME_ACCESS_EXPIRE_MINUTES)
+            refresh_exp = timedelta(minutes=settings.REMEMBER_ME_REFRESH_EXPIRE_MINUTES)
+        else:
+            access_exp = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+            refresh_exp = timedelta(minutes=settings.REFRESH_TOKEN_EXPIRE_MINUTES)
+
+        new_access = create_access_token({"sub": payload["sub"], "role": payload.get("role")}, access_exp)
+        new_refresh = create_refresh_token({"sub": payload["sub"], "role": payload.get("role")}, refresh_exp)
         new_payload = decode_token(new_access)
-        refresh_payload = decode_token(new_refresh)
 
         session.token_jti = new_payload["jti"]
         session.refresh_token_hash = hash_token(new_refresh)
         session.last_activity_at = datetime.now(timezone.utc)
+        session.expires_at = datetime.now(timezone.utc) + access_exp
         db.commit()
-        return {"access_token": new_access, "refresh_token": new_refresh}
+        return {
+            "access_token": new_access,
+            "refresh_token": new_refresh,
+            "remember_me": session.remember_me
+        }

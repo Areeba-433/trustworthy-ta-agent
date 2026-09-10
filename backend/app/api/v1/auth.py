@@ -13,8 +13,9 @@ from app.core.config import settings
 # ============================================================
 # Imports
 # ============================================================
+# Core & Security Imports
+# ============================================================
 
-# Your imports
 from app.core.database import get_db
 from app.core.security import (
     get_password_hash,
@@ -255,7 +256,7 @@ async def verify_email(
         )
     
     # 6. Mark token as used and user as verified
-    verification.used_at = get_token_expiry()
+    verification.used_at = datetime.now(timezone.utc)
     user.is_verified = True
     
     db.commit()
@@ -465,13 +466,17 @@ async def refresh_token(
             detail=error_response("INVALID_TOKEN", "Invalid or expired refresh token")
         )
 
+    remember_me = tokens.get("remember_me", False)
+    access_max_age = 604800 if remember_me else 3600
+    refresh_max_age = 2592000 if remember_me else 604800
+
     response.set_cookie(
         key="access_token", 
         value=tokens["access_token"],
         httponly=True, 
         secure=not settings.DEBUG, 
         samesite="lax", 
-        max_age=3600
+        max_age=access_max_age
     )
     response.set_cookie(
         key="refresh_token", 
@@ -479,7 +484,7 @@ async def refresh_token(
         httponly=True, 
         secure=not settings.DEBUG, 
         samesite="lax", 
-        max_age=604800
+        max_age=refresh_max_age
     )
 
     return success_response("Token refreshed", {
@@ -503,8 +508,7 @@ async def get_me(
     user    = await get_current_user(request, db)
     profile = db.query(Profile).filter(Profile.user_id == user.id).first()
 
-    # ✅ FIXED: Removed non-existent fields
-    # Matches your Profile model
+    # Formatted to match Profile schema specification
     return success_response("User fetched", {
         "id":         str(user.id),
         "email":      user.email,

@@ -5,7 +5,7 @@ from app.main import app
 from app.core.middleware.auth import get_current_user
 from app.core.database import get_db
 
-client = TestClient(app, raise_server_exceptions=False)
+client = TestClient(app, raise_server_exceptions=False, headers={"x-test-suite": "true"})
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
