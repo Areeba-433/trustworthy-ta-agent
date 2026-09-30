@@ -9,6 +9,7 @@ from app.api.v1.admin import router as admin_router
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.middleware.rate_limit import rate_limit_middleware
 from app.core.middleware.logging import logging_middleware
+from app.core.middleware.security_headers import security_headers_middleware
 from app.core.config import settings
 import logging
 
@@ -22,6 +23,7 @@ app = FastAPI(
 
 app.middleware("http")(rate_limit_middleware)
 app.middleware("http")(logging_middleware)
+app.middleware("http")(security_headers_middleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.FRONTEND_URL],

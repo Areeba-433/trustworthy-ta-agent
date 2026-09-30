@@ -59,13 +59,33 @@ async def update_status(user_id: str, body: UpdateStatusRequest,
     if not target:
         raise HTTPException(404, detail=error_response("USER_NOT_FOUND", "User not found"))
 
+    if not body.is_active:
+        if str(target.id) == str(admin.id):
+            raise HTTPException(400, detail=error_response(
+                "CANNOT_DEACTIVATE_SELF", "You cannot deactivate your own account."
+            ))
+        if target.role == UserRole.ADMIN:
+            other_active_admins = db.query(User).filter(
+                User.role == UserRole.ADMIN,
+                User.is_active == True,
+                User.id != target.id
+            ).count()
+            if other_active_admins == 0:
+                raise HTTPException(400, detail=error_response(
+                    "LAST_ADMIN", "Cannot deactivate the last remaining active admin."
+                ))
+
     target.is_active = body.is_active  # type: ignore[assignment]
     action = AuditAction.ACCOUNT_DEACTIVATED if not body.is_active else AuditAction.ACCOUNT_ACTIVATED
 
+    # Single commit at the end so the status change, session revocation and
+    # audit entry land atomically instead of as three separate transactions.
     if not body.is_active:
-        TokenService.revoke_all_sessions(db, str(target.id))
+        TokenService.revoke_all_sessions(db, str(target.id), commit=False)
 
-    AuditService.log(db, action=action, actor_user_id=str(admin.id), target_user_id=str(target.id))
+    AuditService.log(
+        db, action=action, actor_user_id=str(admin.id), target_user_id=str(target.id), commit=False
+    )
     db.commit()
     return success_response("User status updated", {"user": {"id": str(target.id), "is_active": target.is_active}})
 

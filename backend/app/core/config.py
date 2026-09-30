@@ -22,7 +22,8 @@ class Settings(BaseSettings):
     # Environment
     DEBUG: bool = os.getenv("DEBUG", "True").lower() == "true"
     # Security
-    JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "dev-secret-key-change-in-production")
+    # Falls back to legacy SECRET_KEY name so an existing .env keeps working.
+    JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY") or os.getenv("SECRET_KEY") or "dev-secret-key-change-in-production"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 30))
     REFRESH_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("REFRESH_TOKEN_EXPIRE_MINUTES", 43200))
     ALGORITHM: str = os.getenv("ALGORITHM", "HS256")
@@ -45,3 +46,17 @@ class Settings(BaseSettings):
 
 # Create a single instance of settings
 settings = Settings()
+
+_DEFAULT_JWT_KEY = "dev-secret-key-change-in-production"
+if settings.JWT_SECRET_KEY == _DEFAULT_JWT_KEY:
+    if not settings.DEBUG:
+        raise RuntimeError(
+            "JWT_SECRET_KEY is not set (or still on the placeholder value). "
+            "Refusing to start with DEBUG=False and the default signing key."
+        )
+    import warnings
+    warnings.warn(
+        "JWT_SECRET_KEY not set - using the built-in dev default. "
+        "Set JWT_SECRET_KEY in your .env before this leaves your machine.",
+        stacklevel=2,
+    )

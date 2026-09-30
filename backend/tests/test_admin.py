@@ -95,7 +95,7 @@ def test_deactivate_user_by_admin(mock_admin, mock_target_user):
         assert body["success"] is True
         assert body["data"]["user"]["is_active"] is False
 
-        mock_revoke.assert_called_once_with(fake_db, str(mock_target_user.id))
+        mock_revoke.assert_called_once_with(fake_db, str(mock_target_user.id), commit=False)
 
         mock_audit_log.assert_called_once()
         _, kwargs = mock_audit_log.call_args

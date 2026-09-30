@@ -52,12 +52,13 @@ class TokenService:
             db.commit()
 
     @staticmethod
-    def revoke_all_sessions(db: Session, user_id: str):
+    def revoke_all_sessions(db: Session, user_id: str, commit: bool = True):
         db.query(SessionModel).filter(
             SessionModel.user_id == user_id,
             SessionModel.revoked_at.is_(None)
         ).update({"revoked_at": datetime.now(timezone.utc)})
-        db.commit()
+        if commit:
+            db.commit()
 
     @staticmethod
     def _is_inactive(session: SessionModel) -> bool:

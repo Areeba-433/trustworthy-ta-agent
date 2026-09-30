@@ -5,8 +5,8 @@ import re
 
 
 class LoginRequest(BaseModel):
-    identifier: str
-    password: str
+    identifier: str = Field(..., min_length=1, max_length=255)
+    password: str = Field(..., min_length=1, max_length=64)
     remember_me: bool = False
 
 
@@ -32,7 +32,7 @@ class ForgotPasswordRequest(BaseModel):
 class ResetPasswordRequest(BaseModel):
     """Request body for reset password."""
     token: str
-    new_password: str = Field(..., min_length=8)
+    new_password: str = Field(..., min_length=8, max_length=64)
 
     @validator('new_password')
     def validate_password(cls, v: str) -> str:

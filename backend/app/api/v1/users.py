@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.middleware.auth import get_current_user
@@ -11,11 +11,10 @@ router = APIRouter(prefix="/users", tags=["users"])
 
 @router.get("/me")
 async def get_me(
-    request: Request,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user)
 ):
     """Get current user profile."""
-    user = await get_current_user(request, db)
     user_service = UserService(db)
     
     try:
@@ -40,12 +39,11 @@ async def get_me(
 
 @router.put("/me")
 async def update_me(
-    request: Request,
     update_data: UpdateProfileRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user)
 ):
     """Update current user profile."""
-    user = await get_current_user(request, db)
     user_service = UserService(db)
     
     try:

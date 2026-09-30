@@ -7,7 +7,8 @@ class AuditService:
     @staticmethod
     def log(db: Session, action: AuditAction,
             actor_user_id: str = None, target_user_id: str = None,
-            description: str = None, ip_address: str = None):
+            description: str = None, ip_address: str = None,
+            commit: bool = True):
 
         entry = AuditLog(
             actor_user_id  = actor_user_id,
@@ -17,4 +18,5 @@ class AuditService:
             ip_address     = ip_address,
         )
         db.add(entry)
-        db.commit()
+        if commit:
+            db.commit()
