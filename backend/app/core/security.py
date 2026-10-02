@@ -1,11 +1,12 @@
-"""
+﻿"""
 Security utilities for password hashing, token generation, and JWT handling.
 """
 
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import uuid4
-from jose import JWTError, jwt
+import jwt
+from jwt import PyJWTError
 import secrets
 import hashlib
 
@@ -45,7 +46,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     """
     try:
         return _ph.verify(hashed_password, plain_password)
-    except:
+    except Exception:
         return False
 
 
@@ -161,5 +162,5 @@ def decode_token(token: str) -> Optional[dict]:
     try:
         # ⬇️ CHANGED: settings.SECRET_KEY → settings.JWT_SECRET_KEY
         return jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.ALGORITHM])
-    except JWTError:
+    except PyJWTError:
         return None

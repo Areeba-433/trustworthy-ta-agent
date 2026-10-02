@@ -45,7 +45,7 @@ def seed_admin():
             user.is_verified = True
             user.password_hash = hashed_password
             db.commit()
-            print(f"[+] Admin account updated successfully!")
+            print("[+] Admin account updated successfully!")
         else:
             print(f"[*] Creating new Administrator account ({admin_email})...")
             new_user = User(
@@ -69,11 +69,11 @@ def seed_admin():
             )
             db.add(profile)
             db.commit()
-            print(f"[+] Administrator account created successfully!")
+            print("[+] Administrator account created successfully!")
 
         print("\nAdmin Credentials:")
         print(f"  Identifier: {admin_email} (or {admin_username})")
-        print(f"  Role:       ADMIN")
+        print("  Role:       ADMIN")
         print(f"  Password:   {admin_password}")
         print("  Status:     Active & Verified\n")
 

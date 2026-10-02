@@ -1,7 +1,6 @@
 from sqlalchemy.orm import Session
 from app.models.user import User, UserRole
 from app.models.profile import Profile
-from typing import Optional
 
 
 class UserService:

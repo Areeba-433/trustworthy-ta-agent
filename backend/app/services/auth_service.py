@@ -4,10 +4,9 @@ Authentication service - handles auth business logic.
 
 from sqlalchemy.orm import Session
 from app.models.user import User
-from app.models.profile import Profile
 from app.models.email_verification_token import EmailVerificationToken
 from app.models.password_reset_token import PasswordResetToken
-from app.core.security import get_password_hash, verify_password, generate_verification_token, hash_token, get_token_expiry
+from app.core.security import get_password_hash, generate_verification_token, hash_token, get_token_expiry
 from datetime import datetime, timezone
 
 

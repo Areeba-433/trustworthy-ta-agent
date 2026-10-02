@@ -17,7 +17,7 @@ DEFAULT_UNAUTH = (20,  60)
 
 def clear_rate_limits():
     """Clear in-memory rate limit store (useful for testing)."""
-    global _store
+    
     _store.clear()
 
 

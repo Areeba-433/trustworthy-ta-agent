@@ -1,5 +1,4 @@
 from pydantic import BaseModel, validator
-from typing import Optional
 
 class UpdateStatusRequest(BaseModel):
     is_active: bool
