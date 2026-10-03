@@ -5,6 +5,7 @@ Authentication API routes for user registration, verification, login, and logout
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr, Field, validator
+from typing import Optional
 import re
 from datetime import datetime, timezone
 
@@ -12,6 +13,9 @@ from app.core.database import get_db
 from app.core.security import (
     get_password_hash,
     verify_password,
+    create_access_token,
+    create_refresh_token,
+    decode_token,
     generate_verification_token,
     hash_token,
     get_token_expiry,
@@ -26,6 +30,7 @@ from app.services.token_service import TokenService
 from app.services.email_service import send_verification_email, send_password_reset_email
 from app.services.auth_service import AuthService
 from app.services.audit_service import AuditService
+from app.services.captcha_service import verify_captcha
 from app.models.audit_log import AuditAction
 from app.schemas.auth import LoginRequest, success_response, error_response, ForgotPasswordRequest, ResetPasswordRequest
 
@@ -46,6 +51,7 @@ class RegisterRequest(BaseModel):
     first_name: str = Field(..., min_length=1, max_length=100)
     last_name: str = Field(..., min_length=1, max_length=100)
     role: str = "STUDENT"
+    captcha_token: str = ""
 
     @validator('password')
     def validate_password(cls, v):
@@ -60,9 +66,9 @@ class RegisterRequest(BaseModel):
 
     @validator('role')
     def validate_role(cls, v):
-        """Only STUDENT can self-register. TEACHER is granted by an admin."""
-        if v != "STUDENT":
-            raise ValueError('Public registration only allows the STUDENT role')
+        """Public registration allows STUDENT or TEACHER."""
+        if v not in ("STUDENT", "TEACHER"):
+            raise ValueError('Role must be STUDENT or TEACHER')
         return v
 
 
@@ -85,6 +91,7 @@ router = APIRouter(prefix="/auth", tags=["authentication"])
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 async def register(
     register_data: RegisterRequest,
+    request: Request,
     db: Session = Depends(get_db)
 ):
     """
@@ -93,6 +100,24 @@ async def register(
     Creates user, profile, and sends verification email.
     Matches Database Specification: Table 1 (users), Table 2 (profiles).
     """
+
+    # 0. CAPTCHA - stops scripted/bot registration floods. No-ops locally
+    # until TURNSTILE_SECRET_KEY is set (see captcha_service.py).
+    captcha_ok = await verify_captcha(
+        register_data.captcha_token,
+        request.client.host if request.client else None
+    )
+    if not captcha_ok:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "success": False,
+                "error": {
+                    "code": "CAPTCHA_FAILED",
+                    "message": "CAPTCHA verification failed. Please try again."
+                }
+            }
+        )
 
     # 1. Check for duplicate email
     existing_email = db.query(User).filter(User.email == register_data.email).first()
@@ -131,7 +156,7 @@ async def register(
         username=register_data.username,
         email=register_data.email,
         password_hash=password_hash,
-        role=UserRole.STUDENT,  # Public registration is always STUDENT
+        role=UserRole[register_data.role],
         is_active=True,
         is_verified=False
     )
@@ -493,5 +518,6 @@ async def get_me(
             "department": profile.department if profile else None,
             "expertise": profile.expertise if profile else None,
             "bio": profile.bio if profile else None,
+            "profile_picture_url": profile.profile_picture_url if profile else None,
         } if profile else None
     })

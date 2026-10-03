@@ -9,6 +9,7 @@ import Background from "../../components/common/Background";
 import Logo from "../../components/common/Logo";
 import Input from "../../components/ui/Input";
 import Button from "../../components/ui/Button";
+import Turnstile from "../../components/ui/Turnstile";
 
 export default function Register() {
     const [step, setStep] = useState(1);
@@ -18,6 +19,7 @@ export default function Register() {
     });
     const [loading, setLoading] = useState(false);
     const [success, setSuccess] = useState(false);
+    const [captchaToken, setCaptchaToken] = useState("");
 
     useEffect(() => {
         if (success) {
@@ -30,19 +32,26 @@ export default function Register() {
 
     const handleNext = (e) => { e.preventDefault(); setStep(2); };
 
+    const handleBack = () => { setStep(1); setCaptchaToken(""); };
+
     const handleSubmit = async (e) => {
         e.preventDefault();
         if (form.password !== form.confirm_password) {
             toast.error("Passwords do not match");
             return;
         }
+        if (!captchaToken) {
+            toast.error("Please complete the CAPTCHA");
+            return;
+        }
         setLoading(true);
         try {
-            await authService.register(form);
+            await authService.register({ ...form, captcha_token: captchaToken });
             setSuccess(true);
-            toast.success("Account created! 🎉");
+            toast.success("Account created! \ud83c\udf89");
         } catch (err) {
             toast.error(err?.error?.message || "Registration failed");
+            setCaptchaToken("");
         } finally {
             setLoading(false);
         }
@@ -187,8 +196,10 @@ export default function Register() {
                                     ))}
                                 </div>
 
+                                <Turnstile onVerify={setCaptchaToken} onExpire={() => setCaptchaToken("")} />
+
                                 <div className="flex gap-3 pt-2">
-                                    <button type="button" onClick={() => setStep(1)}
+                                    <button type="button" onClick={handleBack}
                                         className="flex-1 py-3.5 rounded-xl text-sm font-medium text-slate-500 bg-slate-100 hover:bg-slate-200 transition-colors">
                                         Back
                                     </button>

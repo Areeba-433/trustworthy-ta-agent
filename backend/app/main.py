@@ -1,9 +1,12 @@
-﻿"""
+"""
 Main FastAPI application entry point.
 """
 
+import os
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from app.api.v1 import router as api_v1_router
+from app.api.v1.auth import router as auth_router
 from app.api.v1.admin import router as admin_router
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.middleware.rate_limit import rate_limit_middleware
@@ -63,3 +66,8 @@ async def health():
     return {"status": "healthy"}
 
 app.include_router(admin_router, prefix="/api/v1")
+
+# Serves uploaded profile pictures at /uploads/avatars/<file>.
+_UPLOADS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "uploads")
+os.makedirs(_UPLOADS_DIR, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=_UPLOADS_DIR), name="uploads")

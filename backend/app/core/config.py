@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     SMTP_USERNAME: str = os.getenv("SMTP_USERNAME", "")
     SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
 
+    # CAPTCHA (Cloudflare Turnstile) - leave unset to disable enforcement
+    # locally; set a real secret from the Turnstile dashboard for prod.
+    TURNSTILE_SECRET_KEY: str = os.getenv("TURNSTILE_SECRET_KEY", "")
+
 # Create a single instance of settings
 settings = Settings()
 
