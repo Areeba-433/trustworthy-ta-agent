@@ -8,6 +8,7 @@ from app.models.email_verification_token import EmailVerificationToken
 from app.models.password_reset_token import PasswordResetToken
 from app.models.session import Session
 from app.models.audit_log import AuditLog, AuditAction
+from app.models.teaching_assistant import TeachingAssistant, TAStatus
 
 __all__ = [
     "User",
@@ -18,4 +19,6 @@ __all__ = [
     "Session",
     "AuditLog",
     "AuditAction",
+    "TeachingAssistant",
+    "TAStatus",
 ]
