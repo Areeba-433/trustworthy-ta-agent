@@ -68,6 +68,12 @@ export default function Profile() {
             <div className="max-w-3xl mx-auto">
                 <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="flex items-center justify-between mb-8">
                     <Logo size="sm" />
+                        {profile?.role === "TEACHER" && (
+                        <Link to="/teacher/teaching-assistants"
+                            className="ml-auto mr-2 flex items-center gap-2 text-sm text-slate-500 hover:text-indigo-600 transition-colors bg-white border border-slate-200 px-4 py-2.5 rounded-xl shadow-sm">
+                            <GraduationCap className="w-4 h-4" /> My Teaching Assistants
+                        </Link>
+                    )}
                     <button onClick={handleLogout}
                         className="flex items-center gap-2 text-sm text-slate-500 hover:text-red-500 transition-colors bg-white border border-slate-200 px-4 py-2.5 rounded-xl shadow-sm">
                         <LogOut className="w-4 h-4" /> Logout

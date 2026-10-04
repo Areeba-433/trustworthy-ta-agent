@@ -9,6 +9,7 @@ import EditProfile    from "./pages/user/EditProfile";
 import UsersList      from "./pages/admin/UsersList";
 import Unauthorized   from "./pages/Unauthorized";
 import PrivateRoute   from "./components/common/PrivateRoute";
+import TeachingAssistants from "./pages/teacher/TeachingAssistants";
 
 export default function App() {
   return (
@@ -22,6 +23,7 @@ export default function App() {
             <Route path="/profile" element={<PrivateRoute><Profile /></PrivateRoute>} />
             <Route path="/profile/edit" element={<PrivateRoute><EditProfile /></PrivateRoute>} />
             <Route path="/admin/users" element={<PrivateRoute role="admin"><UsersList /></PrivateRoute>} />
+            <Route path="/teacher/teaching-assistants" element={<PrivateRoute role="teacher"><TeachingAssistants /></PrivateRoute>} />
 
             <Route path="/"             element={<Login />} />
             <Route path="/unauthorized" element={<Unauthorized />} />
