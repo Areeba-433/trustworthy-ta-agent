@@ -3,8 +3,12 @@
 *.env
 venv/
 .venv/
+*.db
 __pycache__/
+*.log
 dist/
 build/
-
+.vscode/
+chroma_data/
+pytest_output.txt
 backend/uploads/
