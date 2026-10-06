@@ -24,7 +24,7 @@ if config.config_file_name is not None:
 
 # IMPORT YOUR MODELS HERE - FROM app.core.database
 from app.core.database import Base
-from app.models import User, Profile, EmailVerificationToken, Session, AuditLog
+from app.models import User, Profile, EmailVerificationToken, Session, AuditLog, Course
 
 # THIS IS THE KEY LINE - Alembic needs this
 target_metadata = Base.metadata
