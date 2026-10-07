@@ -11,6 +11,7 @@ import Unauthorized   from "./pages/Unauthorized";
 import PrivateRoute   from "./components/common/PrivateRoute";
 import Courses        from "./pages/Courses";
 import CourseDetails  from "./pages/CourseDetails";
+import TaChatPage from "./pages/TaChatPage.jsx";
 
 export default function App() {
   return (
@@ -27,6 +28,8 @@ export default function App() {
 
       <Route path="/courses" element={<PrivateRoute><Courses /></PrivateRoute>} />
       <Route path="/courses/:courseId" element={<PrivateRoute><CourseDetails /></PrivateRoute>} />
+      <Route path="/courses/:courseId/ta" element={ <PrivateRoute> <TaChatPage /> </PrivateRoute>}
+/>
 
       <Route path="/"             element={<Login />} />
       <Route path="/unauthorized" element={<Unauthorized />} />

@@ -10,6 +10,7 @@ from app.models.session import Session
 from app.models.audit_log import AuditLog, AuditAction
 from app.models.course import Course
 from app.models.enrollment import Enrollment
+from app.models.teaching_assistant import TeachingAssistant, TAStatus
 
 __all__ = [
     "User",
@@ -22,4 +23,6 @@ __all__ = [
     "AuditAction",
     "Course",
     "Enrollment",
+    "TeachingAssistant",
+    "TAStatus",
 ]

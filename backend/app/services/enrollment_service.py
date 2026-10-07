@@ -16,6 +16,10 @@ class AlreadyEnrolledError(Exception):
     """Student has already joined this course."""
 
 
+class NotEnrolledError(Exception):
+    """Student is not enrolled in this course."""
+
+
 class EnrollmentService:
     def __init__(self, db: Session):
         self.db = db
@@ -53,6 +57,23 @@ class EnrollmentService:
             .order_by(Enrollment.enrolled_at.desc())
             .all()
         )
+
+    def get_student_course(self, student_id: UUID, course_id: UUID) -> Course:
+        """Return a course the student is enrolled in. Raises NotEnrolledError
+        if the student is not enrolled, or the course is soft-deleted."""
+        course = (
+            self.db.query(Course)
+            .join(Enrollment, Enrollment.course_id == Course.id)
+            .filter(
+                Enrollment.student_id == student_id,
+                Course.id == course_id,
+                Course.is_active.is_(True),
+            )
+            .first()
+        )
+        if course is None:
+            raise NotEnrolledError()
+        return course
 
     def leave_course(self, student_id: UUID, course_id: UUID) -> None:
         enrollment = (

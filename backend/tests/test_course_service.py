@@ -1,4 +1,4 @@
-﻿import uuid
+import uuid
 
 import pytest
 from sqlalchemy import create_engine
@@ -8,6 +8,7 @@ from app.core.database import Base
 from app.models.course import Course
 from app.schemas.course import CourseCreate, CourseUpdate
 from app.services.course_service import CourseNotFoundError, CourseService
+from app.models.teaching_assistant import TeachingAssistant
 
 TEACHER_A = uuid.uuid4()
 TEACHER_B = uuid.uuid4()
@@ -16,7 +17,10 @@ TEACHER_B = uuid.uuid4()
 @pytest.fixture
 def db():
     engine = create_engine("sqlite://")
-    Base.metadata.create_all(engine, tables=[Course.__table__])
+    Base.metadata.create_all(
+        engine,
+        tables=[Course.__table__, TeachingAssistant.__table__],
+    )
     session = sessionmaker(bind=engine)()
     yield session
     session.close()
@@ -28,9 +32,9 @@ def make(service, teacher, name="AI", code="AI-101"):
 
 def test_create_sets_defaults(db):
     course = make(CourseService(db), TEACHER_A)
-    assert course.id is not None
+    assert course.ta is not None
+    assert course.ta.course_id == course.id
     assert course.teacher_id == TEACHER_A
-    assert course.ta_id is None
     assert course.is_active is True
     assert course.join_code and len(course.join_code) == 6
 

@@ -14,6 +14,7 @@ from app.services.enrollment_service import (
     CourseNotFoundByCodeError,
     EnrollmentService,
 )
+from app.models.teaching_assistant import TeachingAssistant
 
 TEACHER = uuid.uuid4()
 STUDENT_A = uuid.uuid4()
@@ -24,7 +25,12 @@ STUDENT_B = uuid.uuid4()
 def db():
     engine = create_engine("sqlite://")
     Base.metadata.create_all(
-        engine, tables=[Course.__table__, Enrollment.__table__]
+        engine,
+        tables=[
+            Course.__table__,
+            TeachingAssistant.__table__,
+            Enrollment.__table__,
+        ],
     )
     session = sessionmaker(bind=engine)()
     yield session

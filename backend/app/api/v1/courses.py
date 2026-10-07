@@ -14,6 +14,7 @@ from app.services.enrollment_service import (
     AlreadyEnrolledError,
     CourseNotFoundByCodeError,
     EnrollmentService,
+    NotEnrolledError,
 )
 
 router = APIRouter(prefix="/courses", tags=["Courses"])
@@ -60,8 +61,7 @@ async def list_courses(
 
 
 # ---------------------------------------------------------------------------
-# Student routes — MUST come before /{course_id} so 'join' and 'enrolled'
-# are not interpreted as UUID path params.
+# Student routes — declared before /{course_id}
 # ---------------------------------------------------------------------------
 
 @router.post("/join")
@@ -108,6 +108,24 @@ async def list_my_enrolled_courses(
     )
 
 
+@router.get("/enrolled/{course_id}")
+async def get_my_enrolled_course(
+    course_id: UUID,
+    student: User = Depends(require_role("STUDENT")),
+    db: Session = Depends(get_db),
+):
+    try:
+        course = EnrollmentService(db).get_student_course(student.id, course_id)
+    except NotEnrolledError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=error_response(
+                "NOT_ENROLLED", "You are not enrolled in this course"
+            ),
+        )
+    return success_response("Course fetched", {"course": _enrolled_json(course)})
+
+
 # ---------------------------------------------------------------------------
 # Per-course routes
 # ---------------------------------------------------------------------------
@@ -151,10 +169,6 @@ async def delete_course(
         raise _not_found()
     return success_response("Course deleted")
 
-
-# ---------------------------------------------------------------------------
-# Student leave — after /{course_id} routes is fine because path is longer.
-# ---------------------------------------------------------------------------
 
 @router.delete("/{course_id}/leave")
 async def leave_course(
