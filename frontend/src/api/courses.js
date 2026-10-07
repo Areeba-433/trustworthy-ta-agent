@@ -25,6 +25,11 @@ export async function listMyEnrolledCourses() {
   return res.data.data.courses;
 }
 
+export async function getEnrolledCourse(courseId) {
+  const res = await api.get(`/courses/enrolled/${courseId}`);
+  return res.data.data.course;
+}
+
 export async function leaveCourse(courseId) {
   const res = await api.delete(`/courses/${courseId}/leave`);
   return res.data;

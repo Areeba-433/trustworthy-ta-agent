@@ -50,23 +50,17 @@ export default function Courses() {
   const isStudent = upperRole === "STUDENT";
   const isTeacher = upperRole === "TEACHER" || upperRole === "ADMIN";
 
-  // 1) who am I
   useEffect(() => {
     userService
       .getProfile()
       .then((res) => {
         const r = res.data?.role ?? res.data?.data?.role ?? null;
-        console.log("[Courses] detected role:", r);
         setRole(r);
       })
-      .catch((err) => {
-        console.warn("[Courses] profile fetch failed:", err?.message);
-        setRole(null);
-      })
+      .catch(() => setRole(null))
       .finally(() => setRoleLoading(false));
   }, []);
 
-  // 2) teacher: load my courses
   useEffect(() => {
     if (roleLoading) return;
     if (!isTeacher) {
@@ -91,7 +85,6 @@ export default function Courses() {
     };
   }, [roleLoading, isTeacher]);
 
-  // 3) student: load enrolled courses
   useEffect(() => {
     if (roleLoading) return;
     if (!isStudent) {
@@ -172,8 +165,6 @@ export default function Courses() {
     }
   }
 
-  // ---------- render ----------
-
   if (roleLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center relative">
@@ -208,7 +199,7 @@ export default function Courses() {
     );
   }
 
-  // ---------- STUDENT VIEW ----------
+  // ---------- STUDENT ----------
   if (isStudent) {
     return (
       <div className="min-h-screen px-4 py-12 relative">
@@ -319,6 +310,14 @@ export default function Courses() {
                 {c.description && (
                   <p className="text-sm text-slate-600 mt-2">{c.description}</p>
                 )}
+                <div className="mt-4 pt-4 border-t border-slate-100">
+                  <Link
+                    to={`/courses/${c.id}`}
+                    className="inline-flex items-center gap-1.5 text-sm font-medium text-indigo-600 hover:text-indigo-700"
+                  >
+                    Open course <ArrowRight className="w-4 h-4" />
+                  </Link>
+                </div>
               </motion.div>
             ))}
           </div>
@@ -327,7 +326,7 @@ export default function Courses() {
     );
   }
 
-  // ---------- TEACHER / ADMIN VIEW ----------
+  // ---------- TEACHER / ADMIN ----------
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center relative">
@@ -485,15 +484,14 @@ export default function Courses() {
 
               <p className="text-xs text-slate-400 mt-3">
                 Teaching Assistant:{" "}
-                <span
-                  className={
-                    course.ta_id
-                      ? "text-emerald-600 font-medium"
-                      : "text-slate-500"
-                  }
-                >
-                  {course.ta_id ? "Assigned" : "Not assigned"}
+                <span className="text-indigo-600 font-medium">
+                  {course.ta?.name || "—"}
                 </span>
+                {course.ta?.status && (
+                  <span className="text-slate-400">
+                    {" "}· {course.ta.status.toLowerCase()}
+                  </span>
+                )}
               </p>
 
               <div className="mt-4 pt-4 border-t border-slate-100">

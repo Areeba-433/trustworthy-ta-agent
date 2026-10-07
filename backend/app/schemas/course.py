@@ -4,6 +4,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.teaching_assistant import TAOut
+
 
 def _clean_name(v: Optional[str]) -> str:
     if v is None:
@@ -61,8 +63,8 @@ class CourseOut(BaseModel):
     name: str
     code: Optional[str]
     description: Optional[str]
-    ta_id: Optional[UUID]
     join_code: str
+    ta: Optional[TAOut] = None
     is_active: bool
     created_at: datetime
     updated_at: datetime

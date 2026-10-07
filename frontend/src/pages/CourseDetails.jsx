@@ -2,20 +2,49 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { ArrowLeft, BookOpen, Hash, Calendar, Bot } from "lucide-react";
-import { getCourse, getErrorMessage, isUnauthorized } from "../api/courses.js";
+import {
+  getCourse,
+  getEnrolledCourse,
+  getErrorMessage,
+  isUnauthorized,
+} from "../api/courses.js";
+import { userService } from "../services/user";
 import Background from "../components/common/Background";
 import Logo from "../components/common/Logo";
+import TaPanel from "../components/TaPanel.jsx";
 import "./courses.css";
 
 export default function CourseDetails() {
   const { courseId } = useParams();
+
+  const [role, setRole] = useState(null);
+  const [roleLoading, setRoleLoading] = useState(true);
+
   const [course, setCourse] = useState(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
+  const isStudent = String(role || "").toUpperCase() === "STUDENT";
+
   useEffect(() => {
+    userService
+      .getProfile()
+      .then((res) => {
+        const r = res.data?.role ?? res.data?.data?.role ?? null;
+        setRole(r);
+      })
+      .catch(() => setRole(null))
+      .finally(() => setRoleLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (roleLoading) return;
+    if (!courseId || !role) return;
+
     let cancelled = false;
-    getCourse(courseId)
+    const fetcher = isStudent ? getEnrolledCourse : getCourse;
+
+    fetcher(courseId)
       .then((data) => {
         if (!cancelled) setCourse(data);
       })
@@ -28,16 +57,16 @@ export default function CourseDetails() {
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+
     return () => {
       cancelled = true;
     };
-  }, [courseId]);
+  }, [courseId, role, roleLoading, isStudent]);
 
   return (
     <div className="min-h-screen px-4 py-12 relative">
       <Background />
       <div className="max-w-3xl mx-auto">
-        {/* Top bar */}
         <motion.div
           initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -48,7 +77,8 @@ export default function CourseDetails() {
             to="/courses"
             className="flex items-center gap-2 text-sm text-slate-500 hover:text-indigo-600 transition-colors bg-white border border-slate-200 px-4 py-2.5 rounded-xl shadow-sm"
           >
-            <ArrowLeft className="w-4 h-4" /> Back to courses
+            <ArrowLeft className="w-4 h-4" />
+            {isStudent ? "Back to My Classes" : "Back to My Courses"}
           </Link>
         </motion.div>
 
@@ -75,7 +105,6 @@ export default function CourseDetails() {
             transition={{ delay: 0.1, duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
             className="edu-card rounded-3xl overflow-hidden"
           >
-            {/* Header banner */}
             <div className="h-24 bg-gradient-to-br from-indigo-500 via-blue-500 to-indigo-400 relative">
               <div
                 className="absolute inset-0 opacity-20"
@@ -116,12 +145,8 @@ export default function CourseDetails() {
                   </div>
                   <div className="min-w-0">
                     <p className="text-xs text-slate-400">Teaching Assistant</p>
-                    <p
-                      className={`text-sm font-medium truncate ${
-                        course.ta_id ? "text-emerald-600" : "text-slate-800"
-                      }`}
-                    >
-                      {course.ta_id ? "Assigned" : "Not assigned"}
+                    <p className="text-sm text-indigo-600 font-medium truncate">
+                      {course.ta?.name || "—"}
                     </p>
                   </div>
                 </div>
@@ -134,16 +159,26 @@ export default function CourseDetails() {
                 </p>
               </div>
 
-              <div className="mt-4 bg-slate-50 border border-slate-100 rounded-xl p-4 flex items-center gap-3">
-                <div className="w-9 h-9 rounded-lg bg-white border border-slate-200 flex items-center justify-center shrink-0">
-                  <Calendar className="w-4 h-4 text-indigo-500" />
+              {course.created_at && (
+                <div className="mt-4 bg-slate-50 border border-slate-100 rounded-xl p-4 flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-lg bg-white border border-slate-200 flex items-center justify-center shrink-0">
+                    <Calendar className="w-4 h-4 text-indigo-500" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs text-slate-400">Created</p>
+                    <p className="text-sm text-slate-800 font-medium truncate">
+                      {new Date(course.created_at).toLocaleString()}
+                    </p>
+                  </div>
                 </div>
-                <div className="min-w-0">
-                  <p className="text-xs text-slate-400">Created</p>
-                  <p className="text-sm text-slate-800 font-medium truncate">
-                    {new Date(course.created_at).toLocaleString()}
-                  </p>
-                </div>
+              )}
+
+              <div className="mt-6 pt-6 border-t border-slate-100">
+                <TaPanel
+  courseId={courseId}
+  isTeacher={!isStudent}
+  initialTa={course.ta ?? null}
+/>
               </div>
             </div>
           </motion.div>

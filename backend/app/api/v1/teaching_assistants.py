@@ -1,71 +1,69 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.rbac import require_role
 from app.models.user import User
-from app.schemas.auth import success_response
-from app.schemas.teaching_assistant import TACreate, TAUpdate
-from app.services.teaching_assistant_service import TeachingAssistantService
+from app.schemas.auth import error_response, success_response
+from app.schemas.teaching_assistant import TAOut, TAUpdate
+from app.services.teaching_assistant_service import (
+    TAAccessDeniedError,
+    TANotFoundError,
+    TeachingAssistantService,
+)
 
-router = APIRouter(prefix="/teaching-assistants")
-
-
-@router.post("", status_code=status.HTTP_201_CREATED)
-async def create_ta(
-    data: TACreate,
-    teacher: User = Depends(require_role("TEACHER")),
-    db: Session = Depends(get_db),
-):
-    service = TeachingAssistantService(db)
-    ta = service.create_ta(teacher_id=teacher.id, data=data)
-    return success_response("Teaching Assistant created", service.to_dict(ta))
+router = APIRouter(prefix="/courses", tags=["Teaching Assistant"])
 
 
-@router.get("")
-async def list_tas(
-    teacher: User = Depends(require_role("TEACHER")),
-    db: Session = Depends(get_db),
-):
-    service = TeachingAssistantService(db)
-    tas = service.list_tas(teacher_id=teacher.id)
-    return success_response(
-        "Teaching Assistants fetched",
-        {"teaching_assistants": [service.to_dict(ta) for ta in tas]},
+def _ta_json(ta) -> dict:
+    return TAOut.model_validate(ta).model_dump(mode="json")
+
+
+def _no_access() -> HTTPException:
+    # 404 so we don't leak whether the course exists.
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=error_response("COURSE_NOT_FOUND", "Course not found"),
     )
 
 
-@router.get("/{ta_id}")
+def _ta_missing() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=error_response("TA_NOT_FOUND", "Teaching assistant not found"),
+    )
+
+
+@router.get("/{course_id}/ta")
 async def get_ta(
-    ta_id: UUID,
+    course_id: UUID,
     teacher: User = Depends(require_role("TEACHER")),
     db: Session = Depends(get_db),
 ):
-    service = TeachingAssistantService(db)
-    ta = service.get_ta(teacher_id=teacher.id, ta_id=ta_id)
-    return success_response("Teaching Assistant fetched", service.to_dict(ta))
+    try:
+        ta = TeachingAssistantService(db).get_for_course(teacher.id, course_id)
+    except TAAccessDeniedError:
+        raise _no_access()
+    except TANotFoundError:
+        raise _ta_missing()
+    return success_response("Teaching assistant fetched", {"ta": _ta_json(ta)})
 
 
-@router.put("/{ta_id}")
+@router.put("/{course_id}/ta")
 async def update_ta(
-    ta_id: UUID,
-    data: TAUpdate,
+    course_id: UUID,
+    body: TAUpdate,
     teacher: User = Depends(require_role("TEACHER")),
     db: Session = Depends(get_db),
 ):
-    service = TeachingAssistantService(db)
-    ta = service.update_ta(teacher_id=teacher.id, ta_id=ta_id, data=data)
-    return success_response("Teaching Assistant updated", service.to_dict(ta))
-
-
-@router.delete("/{ta_id}")
-async def delete_ta(
-    ta_id: UUID,
-    teacher: User = Depends(require_role("TEACHER")),
-    db: Session = Depends(get_db),
-):
-    service = TeachingAssistantService(db)
-    service.delete_ta(teacher_id=teacher.id, ta_id=ta_id)
-    return success_response("Teaching Assistant deleted")
+    try:
+        ta = TeachingAssistantService(db).update_for_course(
+            teacher.id, course_id, body
+        )
+    except TAAccessDeniedError:
+        raise _no_access()
+    except TANotFoundError:
+        raise _ta_missing()
+    return success_response("Teaching assistant updated", {"ta": _ta_json(ta)})

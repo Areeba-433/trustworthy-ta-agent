@@ -6,21 +6,21 @@ from sqlalchemy.orm import Session
 
 from app.core.join_codes import generate_join_code
 from app.models.course import Course
+from app.models.teaching_assistant import TAStatus
 from app.schemas.course import CourseCreate, CourseUpdate
+from app.services.teaching_assistant_service import TeachingAssistantService
 
 
 class CourseNotFoundError(Exception):
-    """Raised when a course does not exist OR belongs to another teacher.
-    Both cases look identical on purpose, so UUIDs cannot be probed."""
+    """Raised when a course does not exist OR belongs to another teacher."""
 
 
 class CourseService:
-    """Course operations. Every query is scoped by teacher_id (ownership)."""
-
     def __init__(self, db: Session):
         self.db = db
 
     def create_course(self, teacher_id: UUID, data: CourseCreate) -> Course:
+        """Creates a course AND its (1:1) teaching assistant atomically."""
         for _ in range(5):
             course = Course(
                 teacher_id=teacher_id,
@@ -28,17 +28,29 @@ class CourseService:
                 code=data.code,
                 description=data.description,
                 join_code=generate_join_code(),
-                ta_id=None,
                 is_active=True,
             )
             self.db.add(course)
             try:
-                self.db.commit()
-                self.db.refresh(course)
-                return course
+                self.db.flush()  # gets course.id without committing
             except IntegrityError:
+                # join_code collision — retry with a fresh code
                 self.db.rollback()
                 continue
+
+            # Create the TA in the same transaction. Name defaults to
+            # "<course name> Assistant".
+            TeachingAssistantService(self.db).create_for_course(
+                teacher_id=teacher_id,
+                course_id=course.id,
+                name=f"{data.name} Assistant",
+                status=TAStatus.DRAFT,
+            )
+
+            self.db.commit()
+            self.db.refresh(course)
+            return course
+
         raise RuntimeError("Could not generate a unique join code")
 
     def list_courses(self, teacher_id: UUID) -> List[Course]:
@@ -72,7 +84,6 @@ class CourseService:
         return course
 
     def delete_course(self, teacher_id: UUID, course_id: UUID) -> None:
-        """Soft delete: keeps the row so future TA/chat data is not orphaned."""
         course = self.get_course(teacher_id, course_id)
         course.is_active = False
         self.db.commit()

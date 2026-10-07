@@ -1,84 +1,106 @@
+"""
+TeachingAssistantService.
+
+One-to-one with Course. Teachers do not create TAs directly — a TA is
+created in the same transaction when a course is created (see CourseService).
+This service is for reading and updating the TA that already exists.
+"""
+
 from uuid import UUID
 
-from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.models.course import Course
 from app.models.teaching_assistant import TAStatus, TeachingAssistant
-from app.schemas.auth import error_response
-from app.schemas.teaching_assistant import TACreate, TAUpdate
-from app.services.course_provider import course_provider
+from app.schemas.teaching_assistant import TAUpdate
+
+
+class TANotFoundError(Exception):
+    """Raised when the course has no TA, or the caller cannot see it."""
+
+
+class TAAccessDeniedError(Exception):
+    """Raised when the caller does not own the parent course."""
 
 
 class TeachingAssistantService:
-    """Business logic for Teaching Assistants. Every query is filtered by
-    teacher_id, so a teacher can only ever see or change their own TAs."""
-
-    def __init__(self, db: Session, courses=course_provider):
+    def __init__(self, db: Session):
         self.db = db
-        self.courses = courses
 
-    def create_ta(self, teacher_id: UUID, data: TACreate) -> TeachingAssistant:
+    def _owned_course(self, teacher_id: UUID, course_id: UUID) -> Course:
+        course = (
+            self.db.query(Course)
+            .filter(
+                Course.id == course_id,
+                Course.teacher_id == teacher_id,
+                Course.is_active.is_(True),
+            )
+            .first()
+        )
+        if course is None:
+            raise TAAccessDeniedError()
+        return course
+
+    # ---------- create (called only by CourseService) ----------
+
+    def create_for_course(
+        self,
+        teacher_id: UUID,
+        course_id: UUID,
+        name: str,
+        status: TAStatus = TAStatus.DRAFT,
+    ) -> TeachingAssistant:
+        """Called from CourseService.create_course. Does NOT commit —
+        the caller commits both rows together."""
         ta = TeachingAssistant(
+            course_id=course_id,
             teacher_id=teacher_id,
-            name=data.name,
-            description=data.description,
-            status=TAStatus.DRAFT,
+            name=name,
+            status=status,
         )
         self.db.add(ta)
-        self.db.commit()
-        self.db.refresh(ta)
+        self.db.flush()  # populates ta.id without committing
         return ta
 
-    def list_tas(self, teacher_id: UUID) -> list[TeachingAssistant]:
-        return (
-            self.db.query(TeachingAssistant)
-            .filter(TeachingAssistant.teacher_id == teacher_id)
-            .order_by(TeachingAssistant.created_at.desc())
-            .all()
-        )
+    # ---------- read ----------
 
-    def get_ta(self, teacher_id: UUID, ta_id: UUID) -> TeachingAssistant:
+    def get_for_course(self, teacher_id: UUID, course_id: UUID) -> TeachingAssistant:
+        self._owned_course(teacher_id, course_id)
         ta = (
             self.db.query(TeachingAssistant)
             .filter(
-                TeachingAssistant.id == ta_id,
+                TeachingAssistant.course_id == course_id,
                 TeachingAssistant.teacher_id == teacher_id,
             )
             .first()
         )
-        if not ta:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=error_response("TA_NOT_FOUND", "Teaching Assistant not found"),
-            )
+        if ta is None:
+            raise TANotFoundError()
         return ta
 
-    def update_ta(self, teacher_id: UUID, ta_id: UUID, data: TAUpdate) -> TeachingAssistant:
-        ta = self.get_ta(teacher_id, ta_id)
+    # ---------- update ----------
+
+    def update_for_course(
+        self,
+        teacher_id: UUID,
+        course_id: UUID,
+        data: TAUpdate,
+    ) -> TeachingAssistant:
+        self._owned_course(teacher_id, course_id)
+        ta = (
+            self.db.query(TeachingAssistant)
+            .filter(
+                TeachingAssistant.course_id == course_id,
+                TeachingAssistant.teacher_id == teacher_id,
+            )
+            .first()
+        )
+        if ta is None:
+            raise TANotFoundError()
+
         changes = data.model_dump(exclude_unset=True)
-        if changes.get("name") is None:
-            changes.pop("name", None)      # name is required, never set it to NULL
-        if changes.get("status") is None:
-            changes.pop("status", None)    # same for status
         for field, value in changes.items():
             setattr(ta, field, value)
         self.db.commit()
         self.db.refresh(ta)
         return ta
-
-    def delete_ta(self, teacher_id: UUID, ta_id: UUID) -> None:
-        ta = self.get_ta(teacher_id, ta_id)
-        self.db.delete(ta)
-        self.db.commit()
-
-    def to_dict(self, ta: TeachingAssistant) -> dict:
-        return {
-            "id": str(ta.id),
-            "teacher_id": str(ta.teacher_id),
-            "name": ta.name,
-            "description": ta.description,
-            "status": ta.status.value,
-            "assigned_courses": self.courses.get_courses_for_ta(ta.teacher_id, ta.id),
-            "created_at": ta.created_at.isoformat() if ta.created_at else None,
-            "updated_at": ta.updated_at.isoformat() if ta.updated_at else None,
-        }

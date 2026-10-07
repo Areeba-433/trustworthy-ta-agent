@@ -24,7 +24,7 @@ def fake_course(**overrides):
         name="Artificial Intelligence",
         code="AI-101",
         description="Intro",
-        ta_id=None,
+        ta=None,
         join_code="ABC123",
         is_active=True,
         created_at=now,
@@ -77,7 +77,7 @@ def test_teacher_creates_course(as_teacher):
     body = res.json()
     assert body["success"] is True
     assert body["data"]["course"]["join_code"] == "ABC123"
-    assert body["data"]["course"]["ta_id"] is None
+    assert body["data"]["course"]["ta"] is None
 
 
 def test_create_course_rejects_blank_name(as_teacher):
