@@ -1,0 +1,11 @@
+/* Course pages — structure only.
+   Visual styling lives in Tailwind classes inside the .jsx files. */
+
+.courses-page {
+  text-align: left;
+}
+
+.courses-form input,
+.courses-form textarea {
+  font: inherit;
+}

@@ -9,23 +9,27 @@ import EditProfile    from "./pages/user/EditProfile";
 import UsersList      from "./pages/admin/UsersList";
 import Unauthorized   from "./pages/Unauthorized";
 import PrivateRoute   from "./components/common/PrivateRoute";
+import Courses        from "./pages/Courses";
+import CourseDetails  from "./pages/CourseDetails";
 
 export default function App() {
   return (
     <Routes>
-            <Route path="/login"           element={<Login />} />
-            <Route path="/register"        element={<Register />} />
-            <Route path="/verify-email"    element={<VerifyEmail />} />
-            <Route path="/forgot-password" element={<ForgotPassword />} />
-            <Route path="/reset-password"  element={<ResetPassword />} />
+      <Route path="/login"           element={<Login />} />
+      <Route path="/register"        element={<Register />} />
+      <Route path="/verify-email"    element={<VerifyEmail />} />
+      <Route path="/forgot-password" element={<ForgotPassword />} />
+      <Route path="/reset-password"  element={<ResetPassword />} />
 
-            <Route path="/profile" element={<PrivateRoute><Profile /></PrivateRoute>} />
-            <Route path="/profile/edit" element={<PrivateRoute><EditProfile /></PrivateRoute>} />
-            <Route path="/admin/users" element={<PrivateRoute role="admin"><UsersList /></PrivateRoute>} />
+      <Route path="/profile" element={<PrivateRoute><Profile /></PrivateRoute>} />
+      <Route path="/profile/edit" element={<PrivateRoute><EditProfile /></PrivateRoute>} />
+      <Route path="/admin/users" element={<PrivateRoute role="admin"><UsersList /></PrivateRoute>} />
 
-            <Route path="/"             element={<Login />} />
-            <Route path="/unauthorized" element={<Unauthorized />} />
+      <Route path="/courses" element={<PrivateRoute><Courses /></PrivateRoute>} />
+      <Route path="/courses/:courseId" element={<PrivateRoute><CourseDetails /></PrivateRoute>} />
+
+      <Route path="/"             element={<Login />} />
+      <Route path="/unauthorized" element={<Unauthorized />} />
     </Routes>
   );
 }
-
