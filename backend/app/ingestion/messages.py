@@ -22,8 +22,13 @@ def format_ranges(nums: list[int]) -> str:
 
 
 def hard_to_read(pages: list[int]) -> str:
+    if len(set(pages)) == 1:
+        return f"Page {pages[0]} was hard to read; answers from it may be less reliable."
     return f"Pages {format_ranges(pages)} were hard to read; answers from them may be less reliable."
 
 
 def no_text_units(unit_name: str, units: list[int]) -> str:
+    """unit_name is plural, like "Pages" or "Slides"."""
+    if len(set(units)) == 1:
+        return f"{unit_name.removesuffix('s')} {units[0]} has no readable text (it may be a picture only)."
     return f"{unit_name} {format_ranges(units)} have no readable text (they may be pictures only)."
