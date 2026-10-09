@@ -1,0 +1,8 @@
+# Track 1: digital PDF, DOCX, PPTX (owner: Areeba). Exact versions from pip freeze.
+# docling==
+# docling-core==
+# docling-parse==
+# docling-ibm-models==
+# python-docx==      (reference text for DOCX tests)
+# python-pptx==      (reference text for PPTX tests)
+# pypdfium2 is pinned in base.txt; don't pin it again here.

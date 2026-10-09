@@ -1,0 +1,4 @@
+# Track 3: lecture audio (owner: Zuha). Exact versions only.
+# groq==             (Whisper through Groq)
+# jiwer==            (word error rate)
+# ffmpeg itself is a system package: it is installed in the Dockerfile.

@@ -1,0 +1,5 @@
+Reading list
+
+Database System Concepts, chapter 7.
+
+Notes on normalization from the course site.

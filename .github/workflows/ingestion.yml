@@ -1,0 +1,30 @@
+# Ingestion contract test on every pull request (owner: Minahil).
+# Runs every registered loader on every sample file; tests marked "slow" are
+# skipped here, so run the full set locally before opening a PR.
+name: ingestion
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop]
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements/*.txt
+      - name: Install
+        run: pip install -r requirements.txt -r requirements/base.txt
+      - name: Contract and shared-piece tests
+        run: pytest tests/ingestion -m "not slow" -q

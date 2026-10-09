@@ -12,3 +12,10 @@ build/
 chroma_data/
 pytest_output.txt
 backend/uploads/
+# ingestion output (parsed/<resource_id>/, cache)
+backend/parsed/
+parsed/
+
+# OCR comparison pages (course material) and outputs
+backend/ocr_eval/
+ocr_output/

@@ -1,0 +1,4 @@
+# Track 4: code, text and Markdown (owner: Fariha). Exact versions only.
+# tree-sitter==
+# tree-sitter-cpp==
+# langchain-text-splitters==   (fallback splitter for code tree-sitter can't parse)

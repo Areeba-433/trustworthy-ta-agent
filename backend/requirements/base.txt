@@ -1,0 +1,12 @@
+# Ingestion step 1, shared (owner: Minahil). Exact versions only, never ranges.
+#   pip install -r requirements.txt -r requirements/base.txt      (from backend/)
+# Each track pins its own libraries in its own file below; announce any new
+# library in the group chat first (it lands in the shared Docker image).
+-r docs.txt
+-r ocr.txt
+-r audio.txt
+-r code.txt
+
+# Pre-check in dispatcher.py, and reference text in Track 1's coverage tests.
+# Pinned here only: if Docling needs a different version, change THIS line.
+pypdfium2==5.13.0

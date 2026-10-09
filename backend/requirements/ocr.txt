@@ -1,0 +1,9 @@
+# Track 2: scanned PDFs and images (owner: Minahil). Exact versions only:
+# install, run the comparison, then copy the versions from `pip freeze`.
+# Docling itself is pinned by Track 1 in docs.txt.
+#
+# easyocr==          the EasyOCR engine (Docling calls it); keep only if it wins
+# jiwer==            optional: faster CER in scripts/compare_ocr.py, same numbers
+#
+# Tesseract is a program, not a pip package: the Dockerfile installs it with
+# English and Urdu data. On Windows, install it separately and put it on PATH.

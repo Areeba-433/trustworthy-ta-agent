@@ -14,3 +14,13 @@ write the PR number.
 | `verify` (hallucination, confidence) | Member 1, Member 2 | Member 2 | stub | | |
 | `save` node | Member 4 | Member 2 | stub | | chat history |
 | Mock chat client (frontend) | Member 4 | Member 3, Member 4 | stub | | `VITE_USE_MOCK=true` |
+## Ingestion (day-0 skeleton)
+
+| Stub | Owner | Used by | Status | Replaced in PR | Notes |
+|---|---|---|---|---|---|
+| `loaders/docs.py` `load()` | Areeba | dispatcher | stub | | Track 1: digital PDF, DOCX, PPTX |
+| `loaders/ocr.py` `load()` | Minahil | dispatcher | stub | | Track 2: scanned PDF, images |
+| `loaders/ocr.py` `ocr_options()` | Minahil | Areeba | stub | | Docling's default OCR until day 4 |
+| `loaders/audio.py` `load()` | Zuha | dispatcher | stub | | Track 3 |
+| `loaders/code.py`, `loaders/text.py` `load()` | Fariha | dispatcher | stub | | Track 4 |
+| `cleaning/common.py` `clean_text()` | Minahil | Tracks 1 to 3 | real | | v1: rules 1 to 4; `finalize_blocks()` does rules 5 and 7 |
