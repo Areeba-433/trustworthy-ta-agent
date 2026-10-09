@@ -12,3 +12,4 @@ build/
 chroma_data/
 pytest_output.txt
 backend/uploads/
+data/

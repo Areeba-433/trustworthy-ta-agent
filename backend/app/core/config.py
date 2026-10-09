@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     # CAPTCHA (Cloudflare Turnstile) - leave unset to disable enforcement
     # locally; set a real secret from the Turnstile dashboard for prod.
     TURNSTILE_SECRET_KEY: str = os.getenv("TURNSTILE_SECRET_KEY", "")
+        # Ingestion
+    INGESTION_DATA_DIR: str = os.getenv("INGESTION_DATA_DIR", "data/ingestion")
+    INGESTION_MAX_FILE_MB: int = int(os.getenv("INGESTION_MAX_FILE_MB", 50))
+    OCR_ENGINE: str = os.getenv("OCR_ENGINE", "easyocr")
 
 # Create a single instance of settings
 settings = Settings()
