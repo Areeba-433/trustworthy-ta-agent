@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     INGESTION_DATA_DIR: str = os.getenv("INGESTION_DATA_DIR", "data/ingestion")
     INGESTION_MAX_FILE_MB: int = int(os.getenv("INGESTION_MAX_FILE_MB", 50))
     OCR_ENGINE: str = os.getenv("OCR_ENGINE", "easyocr")
+    INGESTION_MAX_OCR_PAGES: int = 20       # scanned pages per file; OCR takes ~1 min per page on CPU
 
 # Create a single instance of settings
 settings = Settings()

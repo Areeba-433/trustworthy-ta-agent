@@ -32,3 +32,6 @@ def no_text_units(unit_name: str, units: list[int]) -> str:
     if len(set(units)) == 1:
         return f"{unit_name.removesuffix('s')} {units[0]} has no readable text (it may be a picture only)."
     return f"{unit_name} {format_ranges(units)} have no readable text (they may be pictures only)."
+
+def too_many_scanned_pages(limit: int) -> str:
+    return f"This scanned file has too many pages to read at once. Please split it into files of {limit} pages or fewer."
