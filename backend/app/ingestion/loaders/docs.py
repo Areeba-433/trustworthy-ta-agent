@@ -9,7 +9,9 @@ load() turns one file into a ParsedDocument in four steps:
 from __future__ import annotations
 
 import logging
+import os
 import shutil
+import uuid
 from collections import defaultdict
 from functools import lru_cache
 from importlib.metadata import version
@@ -21,6 +23,7 @@ from app.ingestion.cleaning.common import (clean_text, detect_lang, find_repeate
                                            is_repeated, title_from_filename)
 from app.ingestion.contract import Block, Location, ParsedDocument, QualityReport, ResourceMeta
 from app.ingestion.dispatcher import failed_document
+from app.ingestion.loaders import fast_pdf
 from app.ingestion.precheck import GARBAGE_MAX
 from app.ingestion.registry import register
 from app.ingestion.storage import Timer, cache_path, raw_dir
@@ -55,6 +58,17 @@ def docling_version() -> str:
     return version("docling")
 
 
+def cache_variant(source_type: str) -> str:
+    """The name saved results go under: it changes with the conversion options and the fast path's version."""
+    fast = source_type == "pdf" and fast_pdf_on()
+    return CACHE_VARIANT + (f"-fast-pdf-{fast_pdf.VERSION}" if fast else "")
+
+
+def fast_pdf_on() -> bool:
+    """The fast path for long PDFs (fast_pdf.py). Set INGESTION_FAST_PDF=0 to send every page to Docling."""
+    return os.getenv("INGESTION_FAST_PDF", "1") != "0"
+
+
 @lru_cache(maxsize=1)
 def _converter():
     """Docling's converter, built once: setting it up loads its models, so every file reuses it."""
@@ -82,17 +96,31 @@ def convert(path: Path, meta: ResourceMeta) -> tuple[DoclingDocument | None, boo
     from docling.datamodel.base_models import ConversionStatus
     from docling_core.types.doc import DoclingDocument, ImageRefMode
 
-    saved = cache_path(meta.file_sha256, PARSER, docling_version(), CACHE_VARIANT)
+    fast = meta.precheck.source_type == "pdf" and fast_pdf_on()
+    variant = cache_variant(meta.precheck.source_type)
+    saved = cache_path(meta.file_sha256, PARSER, docling_version(), variant)
     if saved.exists():
         document, complete = DoclingDocument.load_from_json(saved), True
     else:
-        result = _converter().convert(path, raises_on_error=False)
-        if result.status not in (ConversionStatus.SUCCESS, ConversionStatus.PARTIAL_SUCCESS):
-            logger.warning("docling could not read %s: %s", meta.file_name, result.errors)
-            return None, False
-        document, complete = result.document, result.status == ConversionStatus.SUCCESS
+        document = None
+        if fast:                            # long digital PDFs: plain pages read directly, Docling for the rest
+            def batch_file(key: str) -> Path:
+                return cache_path(meta.file_sha256, PARSER, docling_version(), f"{variant}-part-{key}")
+
+            try:
+                document, complete, report = fast_pdf.convert_pdf(path, _converter, batch_file)
+                logger.info("%s: %s", meta.file_name, report)
+            except Exception:                 # the fast path must never cost a file: Docling reads it whole
+                logger.exception("fast path failed on %s; Docling reads the whole file", meta.file_name)
+                document = None
+        if document is None:
+            result = _converter().convert(path, raises_on_error=False)
+            if result.status not in (ConversionStatus.SUCCESS, ConversionStatus.PARTIAL_SUCCESS):
+                logger.warning("docling could not read %s: %s", meta.file_name, result.errors)
+                return None, False
+            document, complete = result.document, result.status == ConversionStatus.SUCCESS
         if complete:
-            tmp = saved.with_suffix(".json.tmp")
+            tmp = saved.with_name(f"{saved.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
             document.save_as_json(tmp, image_mode=ImageRefMode.PLACEHOLDER)
             tmp.replace(saved)          # all or nothing: a crash never leaves half a file in the cache
     if saved.exists():
