@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import uuid
 from collections import defaultdict
@@ -135,13 +136,70 @@ def convert(path: Path, meta: ResourceMeta) -> tuple[DoclingDocument | None, boo
     return document, complete
 
 
+# "Lecture 05: Arrays", "Chapter 3", "Week 2": a top-level part of a course file, whatever its font size
+_PART = re.compile(r"^\s*(lecture|chapter|unit|week|module|part)\s*(no\.?|#)?\s*[-:.]?\s*\d+\b", re.IGNORECASE)
+# a label over the content that follows ("Example 3:", "Sample output", "Task # 2"), not the start of a section
+_LABEL = re.compile(r"^\s*(examples?|sample\s*output|program\s*output|output|ouput|note|task|homework|demo|"
+                    r"exercises?|solution|hint)\s*(#\s*)?(\d+\b|:\s*$)", re.IGNORECASE)   # a number, or ":" alone
+
+
+def _heading_like(text: str, source_type: str) -> bool:
+    """Is this short text a heading, or a line a PDF reader took for one (a label, a code line, a sentence)?"""
+    if _PART.match(text) or source_type != "pdf":
+        return True
+    words = text.split()
+    text = text.strip()
+    ends = text.endswith((".", ":", ";", "\u201d", '"'))      # a question ("6.8 What is the output ...?") stays
+    sentence = (len(words) > 14 or (len(words) > 10 and "," in text) or (len(words) > 7 and ends)
+                or (len(words) > 3 and text[:1].islower()       # the end of a sentence ("will generate the function"),
+                    and (ends or text.endswith("?") or not any(w[:1].isupper() for w in words[1:]))))
+                                                                # not "string Member Functions and Operators"
+    # a line of code; "2.8 The C++ string Class", "Mixing cin >> and cin.get" are headings of a C++ book
+    code = (re.search(r"[;{}]", text) or text.startswith(("//", "#include", "/*")) or re.fullmatch(r"\w+\(\)", text)
+            or (text[:1].islower() and re.search(r"==|<<|>>|\w\+\+|\w\(\)|\w\[\d*\]|\s=\s", text)))
+    return not (sentence or code or _LABEL.match(text) or text.startswith("o ") or "\u2022" in text)
+
+
+def _parts(document: DoclingDocument) -> set[str]:
+    """The "Lecture N" headings that divide a set of lectures, each starting its own page. A page listing
+    several ("Chapter 1 ... Chapter 2 ..." in a book's contents) is a list, not where parts start, and so is
+    the last page of that list, with one left over. Fewer than two: the file is one lecture, and its
+    "Lecture 5: Joins" stays its title."""
+    by_page: dict[int, list] = defaultdict(list)
+    for item, _ in document.iterate_items():
+        if item.label.value in ("title", "section_header") and _PART.match(item.text) and item.prov:
+            by_page[item.prov[0].page_no].append(item)
+    listing = {page for page, items in by_page.items() if len(items) > 1}
+    found = {items[0].self_ref for page, items in by_page.items()
+             if len(items) == 1 and not {page - 1, page + 1} & listing}
+    return found if len(found) >= 2 else set()
+
+
 def document_title(document: DoclingDocument, source_type: str, file_name: str) -> str:
-    """The first title Docling found (PDF, DOCX), else the file name. A deck's title is its file name."""
+    """The first title Docling found (PDF, DOCX), else the file name. A deck's title is its file name.
+    In a set of lectures, "Lecture 01: Recap" is the first lecture's heading, not the file's title."""
     if source_type != "pptx":
+        parts = _parts(document)
         for item, _ in document.iterate_items():
-            if item.label.value == "title" and clean_text(item.text):
+            if item.label.value == "title" and clean_text(item.text) and item.self_ref not in parts:
                 return clean_text(item.text)
     return title_from_filename(file_name)
+
+
+def _heading_levels(document: DoclingDocument, source_type: str) -> dict[int, int]:
+    """Docling's heading levels (or the fast reader's) squeezed into 1 to 4: parts ("Lecture 05") are 1, the
+    other levels follow in their order below them, so a run of bold lines cannot nest a dozen deep."""
+    from docling_core.types.doc import ContentLayer
+
+    found = set()
+    parts = _parts(document)
+    for item, _ in document.iterate_items(included_content_layers={ContentLayer.BODY}):
+        if _kind(item, document) == "heading" and item.label.value != "title":
+            text = clean_text(item.text)
+            if text and item.self_ref not in parts and _heading_like(text, source_type):
+                found.add(getattr(item, "level", 1))
+    first = 2 if parts else 1
+    return {level: min(first + rank, 4) for rank, level in enumerate(sorted(found))}
 
 
 def _kind(item, document: DoclingDocument) -> str | None:
@@ -205,6 +263,8 @@ def walk(document: DoclingDocument, source_type: str, title: str) -> list[dict]:
     slide_title: str | None = None
     title_seen = False
     tables = None                           # Markdown writer for tables, made once (see below)
+    levels = _heading_levels(document, source_type)
+    parts = _parts(document)
     # traverse_pictures: the words inside a diagram (labels, boxes, a UML class) are text of the book too
     for item, _ in document.iterate_items(included_content_layers={ContentLayer.BODY, ContentLayer.NOTES, ContentLayer.FURNITURE},
                                           traverse_pictures=True):
@@ -218,6 +278,8 @@ def walk(document: DoclingDocument, source_type: str, title: str) -> list[dict]:
         in_picture = kind != "caption" and _inside(item, document, PictureItem)
         if in_picture and kind == "heading":
             kind = "paragraph"                  # a label in a diagram never starts a section
+        if kind == "heading" and not _heading_like(clean_text(item.text), source_type):
+            kind = "paragraph"                  # "Example 3:", a code line, a whole sentence in bold
         if kind == "table":
             if tables is None:
                 # item.export_to_markdown(doc=...) builds this writer again for every table, and building it
@@ -235,10 +297,10 @@ def walk(document: DoclingDocument, source_type: str, title: str) -> list[dict]:
                 continue
             if source_type == "pptx" and item.label.value == "title":
                 slide_title, headings = name, []
-            elif item.label.value == "title" and not title_seen:
+            elif item.label.value == "title" and not title_seen and item.self_ref not in parts:
                 title_seen = True                  # the document's own title is already heading_path[0]
             else:
-                level = getattr(item, "level", 1)
+                level = 1 if item.self_ref in parts else levels.get(getattr(item, "level", 1), 4)
                 headings = [h for h in headings if h[0] < level] + [(level, name)]
         context = [slide_title or f"Slide {unit}"] if source_type == "pptx" else []
         extra = {"ref": item.self_ref}

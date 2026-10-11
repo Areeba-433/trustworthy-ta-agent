@@ -259,6 +259,37 @@ def test_pdf_blocks_carry_their_page_and_heading_path():
     assert [b.seq for b in blocks] == list(range(len(blocks)))
 
 
+
+def test_labels_code_and_sentences_are_not_headings():
+    for text in ("Example 3: // copy the arrays", "Sample output1:", "Task # 2", "Homework:", "int main()",
+                 "cout << *yptr; // 10", "It is easier, however, to combine both definitions on one line:",
+                 "will generate the function"):
+        assert not docs._heading_like(text, "pdf"), text
+    for text in ("Lecture 06", "2.8 The C++ string Class", "Mixing cin >> and cin.get", "Example",
+                 "8.2 Focus on Problem Solving and Program Design: A Case Study", "string Member Functions and Operators",
+                 "6.15 The exit() Function", "Solution: Virtual Inheritance"):
+        assert docs._heading_like(text, "pdf"), text
+
+
+def test_lectures_are_top_level_but_a_contents_list_is_not():
+    def on(page: int) -> ProvenanceItem:
+        return ProvenanceItem(page_no=page, bbox=BoundingBox(l=50, t=50, r=500, b=80), charspan=(0, 0))
+
+    d = DoclingDocument(name="notes")
+    for page, text in ((2, "Chapter 1 Intro"), (2, "Chapter 2 Loops"), (3, "Chapter 3 Arrays")):   # a contents page
+        d.add_heading(text, level=2, prov=on(page))
+    for page, lecture in ((5, "Lecture 01: Recap"), (9, "Lecture 02: Loops")):
+        d.add_heading(lecture, level=3, prov=on(page))
+        d.add_heading("Arrays", level=1, prov=on(page))
+        d.add_heading("Example 1:", level=2, prov=on(page))
+        d.add_text(DocItemLabel.TEXT, "int a[3];", prov=on(page))
+    assert sorted(item.text for item, _ in d.iterate_items() if item.self_ref in docs._parts(d)) == [
+        "Lecture 01: Recap", "Lecture 02: Loops"]                          # not "Chapter 3", the end of the list
+    raw = docs.walk(d, "pdf", "notes")
+    assert raw[-1]["path"] == ["notes", "Lecture 02: Loops", "Arrays"]       # "Example 1:" is text, not a heading
+    assert [r["path"] for r in raw if r["text"] == "Chapter 3 Arrays"] == [["notes", "Chapter 3 Arrays"]]
+
+
 def test_pdf_headers_and_footers_are_dropped():
     assert not any("Database Systems" in b.text or b.text.strip() in {"1", "2", "3"} for b in pdf_blocks())
 
