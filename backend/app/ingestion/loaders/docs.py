@@ -149,7 +149,7 @@ def _heading_like(text: str, source_type: str) -> bool:
         return True
     words = text.split()
     text = text.strip()
-    ends = text.endswith((".", ":", ";", "\u201d", '"'))      # a question ("6.8 What is the output ...?") stays
+    ends = text.endswith((".", ",", ":", ";", "\u201d", '"'))      # a question ("6.8 What is the output ...?") stays
     sentence = (len(words) > 14 or (len(words) > 10 and "," in text) or (len(words) > 7 and ends)
                 or (len(words) > 3 and text[:1].islower()       # the end of a sentence ("will generate the function"),
                     and (ends or text.endswith("?") or not any(w[:1].isupper() for w in words[1:]))))

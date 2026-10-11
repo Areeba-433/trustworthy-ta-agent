@@ -263,7 +263,7 @@ def test_pdf_blocks_carry_their_page_and_heading_path():
 def test_labels_code_and_sentences_are_not_headings():
     for text in ("Example 3: // copy the arrays", "Sample output1:", "Task # 2", "Homework:", "int main()",
                  "cout << *yptr; // 10", "It is easier, however, to combine both definitions on one line:",
-                 "will generate the function"):
+                 "will generate the function", "It is explained in example code given below,"):
         assert not docs._heading_like(text, "pdf"), text
     for text in ("Lecture 06", "2.8 The C++ string Class", "Mixing cin >> and cin.get", "Example",
                  "8.2 Focus on Problem Solving and Program Design: A Case Study", "string Member Functions and Operators",
