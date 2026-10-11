@@ -2,9 +2,11 @@ from pathlib import Path
 
 import pypdfium2 as pdfium
 import pytest
+from PIL import Image
 
+from app.core.config import settings
 from app.ingestion import messages
-from app.ingestion.precheck import UnsupportedFileType, precheck
+from app.ingestion.precheck import SUPPORTED_EXTENSIONS, UnsupportedFileType, precheck
 
 
 def test_scanned_pdf_goes_to_ocr(scanned_pdf):
@@ -23,6 +25,18 @@ def test_a_book_with_a_picture_cover_is_still_digital(scanned_pdf, tmp_path):
     book.save(str(path))
     result = precheck(path)
     assert result.source_type == "pdf" and result.scanned_pages == [1]
+
+
+def test_the_ocr_page_limit_is_only_for_files_that_go_to_ocr(scanned_pdf, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "INGESTION_MAX_OCR_PAGES", 0)
+    textbook = Path(__file__).parent / "samples" / "fast_pdf" / "textbook.pdf"
+    book = pdfium.PdfDocument.new()
+    book.import_pages(pdfium.PdfDocument(str(scanned_pdf)))
+    book.import_pages(pdfium.PdfDocument(str(textbook)))
+    path = tmp_path / "book.pdf"
+    book.save(str(path))
+    result = precheck(path)
+    assert result.ok and result.source_type == "pdf"             # a digital book is not refused for its cover
 
 
 def test_mostly_scanned_pages_go_to_ocr(scanned_pdf, tmp_path):
@@ -58,8 +72,36 @@ def test_broken_image_is_caught(tmp_path):
     assert precheck(broken).reason == messages.UNREADABLE
 
 
-def test_unknown_file_type_is_refused(tmp_path):
-    exe = tmp_path / "setup.exe"
-    exe.write_bytes(b"MZ")
+@pytest.mark.parametrize("name", ["setup.exe", "scan.tif", "scan.tiff", "old.doc", "old.ppt"])
+def test_unsupported_types_are_refused(tmp_path, name):
+    path = tmp_path / name
+    path.write_bytes(b"anything")
     with pytest.raises(UnsupportedFileType):
-        precheck(exe)
+        precheck(path)
+
+
+def test_supported_types_match_the_upload_page():
+    # If this fails, the list of types changed: update the upload page text too.
+    assert set(SUPPORTED_EXTENSIONS) == {".pdf", ".docx", ".pptx", ".png", ".jpg", ".jpeg",
+                                         ".mp3", ".m4a", ".wav", ".cpp", ".h", ".hpp", ".txt", ".md"}
+
+
+def _scan_with_pages(path, pages):
+    """A picture-only PDF with this many pages, like a scanner makes."""
+    page = Image.new("RGB", (620, 877), "white")
+    page.save(path, save_all=True, append_images=[page] * (pages - 1))
+    return path
+
+
+def test_scan_at_the_page_limit_is_accepted(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "INGESTION_MAX_OCR_PAGES", 2)
+    result = precheck(_scan_with_pages(tmp_path / "short_scan.pdf", 2))
+    assert result.ok and result.scanned_pages == [1, 2]
+
+
+def test_scan_over_the_page_limit_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "INGESTION_MAX_OCR_PAGES", 2)
+    result = precheck(_scan_with_pages(tmp_path / "long_scan.pdf", 3))
+    assert not result.ok
+    assert result.source_type == "scanned_pdf"
+    assert result.reason == messages.too_many_scanned_pages(2)

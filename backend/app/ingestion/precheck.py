@@ -13,7 +13,7 @@ from app.ingestion.contract import PrecheckResult, SourceType
 
 SUPPORTED_EXTENSIONS: dict[str, SourceType] = {
     ".pdf": "pdf", ".docx": "docx", ".pptx": "pptx",
-    ".png": "image", ".jpg": "image", ".jpeg": "image", ".tif": "image", ".tiff": "image",
+    ".png": "image", ".jpg": "image", ".jpeg": "image",
     ".mp3": "audio", ".m4a": "audio", ".wav": "audio",
     ".cpp": "code", ".h": "code", ".hpp": "code",
     ".txt": "text", ".md": "text",
@@ -22,7 +22,7 @@ _MAGIC: dict[str, tuple[bytes, ...]] = {            # the signature each file ty
     "pdf": (b"%PDF",),
     "docx": (b"PK\x03\x04",),
     "pptx": (b"PK\x03\x04",),
-    "image": (b"\x89PNG", b"\xff\xd8\xff", b"II*\x00", b"MM\x00*"),
+    "image": (b"\x89PNG", b"\xff\xd8\xff"),                 # PNG, JPG,
 }
 MIN_LETTERS_PER_PAGE = 25      # starting values: tune them on real samples later
 SCANNED_IMAGE_SHARE = 0.5
@@ -104,7 +104,13 @@ def _check_pdf(path: Path) -> PrecheckResult:
     finally:
         pdf.close()
     problem = len(set(scanned) | set(garbage))
+    if problem <= MIXED_SHARE * total:
+        source_type: SourceType = "pdf"           # digital, with at most a few picture-only or broken pages
+    elif problem > settings.INGESTION_MAX_OCR_PAGES:   # OCR is slow: limit pages per file
+        return _fail("scanned_pdf", messages.too_many_scanned_pages(settings.INGESTION_MAX_OCR_PAGES))
+    else:
+        source_type = "scanned_pdf"
     return PrecheckResult(
-        source_type="scanned_pdf" if problem > MIXED_SHARE * total else "pdf",
+        source_type=source_type,
         pages_total=total, scanned_pages=scanned, garbage_pages=garbage, large_image_pages=large,
     )
