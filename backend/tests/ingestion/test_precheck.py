@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pypdfium2 as pdfium
 import pytest
 
@@ -10,6 +12,28 @@ def test_scanned_pdf_goes_to_ocr(scanned_pdf):
     assert result.ok
     assert result.source_type == "scanned_pdf"
     assert result.scanned_pages == [1]
+
+
+def test_a_book_with_a_picture_cover_is_still_digital(scanned_pdf, tmp_path):
+    textbook = Path(__file__).parent / "samples" / "fast_pdf" / "textbook.pdf"
+    book = pdfium.PdfDocument.new()
+    book.import_pages(pdfium.PdfDocument(str(scanned_pdf)))      # a cover that is only a picture
+    book.import_pages(pdfium.PdfDocument(str(textbook)))         # then 25 pages of text
+    path = tmp_path / "book.pdf"
+    book.save(str(path))
+    result = precheck(path)
+    assert result.source_type == "pdf" and result.scanned_pages == [1]
+
+
+def test_mostly_scanned_pages_go_to_ocr(scanned_pdf, tmp_path):
+    textbook = Path(__file__).parent / "samples" / "fast_pdf" / "textbook.pdf"
+    book = pdfium.PdfDocument.new()
+    for _ in range(4):
+        book.import_pages(pdfium.PdfDocument(str(scanned_pdf)))
+    book.import_pages(pdfium.PdfDocument(str(textbook)), [0, 1])
+    path = tmp_path / "mixed.pdf"
+    book.save(str(path))
+    assert precheck(path).source_type == "scanned_pdf"           # 4 of 6 pages are scans
 
 
 def test_blank_page_is_not_treated_as_a_scan(tmp_path):

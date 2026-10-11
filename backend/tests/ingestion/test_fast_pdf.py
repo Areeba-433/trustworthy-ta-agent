@@ -49,6 +49,11 @@ class StandIn:
                                document=fast_pdf._to_document("pages", scans, items))
 
 
+def make_stand_in():
+    """For Docling processes (they import this module afresh and call it by name)."""
+    return StandIn()
+
+
 def read_book(tmp_path, stand_in=None):
     stand_in = stand_in or StandIn()
     doc, complete, report = fast_pdf.convert_pdf(BOOK, lambda: stand_in, lambda key: tmp_path / f"{key}.json")
@@ -130,6 +135,27 @@ def test_docling_reads_only_its_pages_in_batches_and_each_batch_is_saved(tmp_pat
     again = StandIn()
     read_book(tmp_path, again)
     assert again.calls == []                          # every batch was saved, so nothing is read twice
+
+
+@pytest.mark.slow                 # starts two Python processes: about a minute on Windows
+def test_several_docling_processes_read_the_same_book(tmp_path, monkeypatch):
+    monkeypatch.setattr(fast_pdf, "BATCH_PAGES", 2)
+    (tmp_path / "one").mkdir()
+    (tmp_path / "two").mkdir()
+    one, _, _, _ = read_book(tmp_path / "one")
+    doc, complete, report = fast_pdf.convert_pdf(BOOK, StandIn, lambda key: tmp_path / "two" / f"{key}.json",
+                                                 workers=2, converter_name="test_fast_pdf:make_stand_in")
+    two = docs.to_blocks(docs.walk(doc, "pdf", docs.document_title(doc, "pdf", BOOK.name)), "pdf")
+    assert complete and report["docling_workers"] == 2
+    assert [(b.kind, b.text, b.loc.page) for b in two] == [(b.kind, b.text, b.loc.page) for b in one]
+
+
+def test_if_the_processes_fail_the_batches_are_read_one_by_one(tmp_path, monkeypatch):
+    monkeypatch.setattr(fast_pdf, "BATCH_PAGES", 2)
+    stand_in = StandIn()
+    doc, complete, report = fast_pdf.convert_pdf(BOOK, lambda: stand_in, lambda key: tmp_path / f"{key}.json",
+                                                 workers=2, converter_name="no_such_module:nothing")
+    assert complete and report["docling_workers"] == 1 and stand_in.calls == [2, 2, 2, 1]
 
 
 def test_a_failed_batch_marks_the_book_incomplete_and_is_not_saved(tmp_path):

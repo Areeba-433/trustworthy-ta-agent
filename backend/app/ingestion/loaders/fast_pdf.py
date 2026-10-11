@@ -21,6 +21,7 @@ import os
 import re
 import statistics
 import uuid
+import warnings
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,7 +32,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("tta.ingestion.fast_pdf")
 
-VERSION = 4                      # raise it whenever the fast path's output changes, so saved results are redone
+VERSION = 6                      # raise it whenever the fast path's output changes, so saved results are redone
 BATCH_PAGES = 50                 # pages per Docling run: each finished batch is saved, so a crash loses at most one
 ROUTE_ALL_ABOVE = 0.7            # when more than this share of pages needs Docling, Docling reads the whole file
 MIN_PAGES = 20                   # shorter files go straight to Docling; the fast path only pays off on long ones
@@ -266,7 +267,8 @@ def _runs(textpage) -> tuple[list[Frag], list[tuple[str, float, float, float, fl
         obj = pdfium_c.FPDFText_GetTextObject(raw, i)
         obj = ctypes.cast(obj, ctypes.c_void_p).value if obj else None
         height = max(box[3] - box[1], 1.0)
-        if cur is not None and obj == cur["obj"] and abs(box[1] - cur["b"]) < 0.5 * height \
+        tall = max(height, cur["t"] - cur["b"]) if cur is not None else height     # "_" or "." is flat
+        if cur is not None and obj == cur["obj"] and abs(box[1] - cur["b"]) < 0.5 * tall \
                 and -0.5 * height < box[0] - cur["r"] < 1.2 * max(height, cur["t"] - cur["b"]):
             cur["text"] += ch
             cur["r"], cur["t"], cur["i1"] = max(cur["r"], box[2]), max(cur["t"], box[3]), max(i, pair)
@@ -595,12 +597,16 @@ def _route(scan: PageScan, h_lines, v_lines, drawn, rotated: bool) -> None:
             continue                              # a lone rule: under a header, above footnotes
         if not g["h"]:
             continue                              # a lone vertical bar beside text
+        if x1 - x0 < 30 or y1 - y0 < 10 or not _text_inside(lines, x0 - 1, y0 - 1, x1 + 1, y1 + 1):
+            continue                              # a small mark or an icon with no text in it, not a table
         xs = _cluster([p for *_, p in g["v"]], 1.5)
         ys = sorted(_cluster([p for *_, p in g["h"]], 1.5), reverse=True)
         full = (all(a0 <= xs[0] + 2 and a1 >= xs[-1] - 2 for a0, a1, _ in g["h"])
                 and all(a0 <= ys[-1] + 2 and a1 >= ys[0] - 2 for a0, a1, _ in g["v"]))
         if len(xs) == 2 and len(ys) == 2:
             continue                              # a box around text: the text is read as usual
+        if len(xs) == 1:
+            continue                              # one upright line with rules off it: a listing's bar, a bracket
         if not full or len(xs) < 3 or len(ys) < 3:
             return to_docling("table with merged cells, or a drawing")
         scan.grids.append(Grid(xs, ys))
@@ -611,7 +617,7 @@ def _route(scan: PageScan, h_lines, v_lines, drawn, rotated: bool) -> None:
                 continue                          # a rule under the header and one over the footer
             between = [ln for ln in lines if low - 1 < (ln.b + ln.t) / 2 < high + 1
                        and a0 * 4 - 4 <= ln.l and ln.r <= a1 * 4 + 4]
-            if sum(1 for ln in between if _columns_in(ln)) >= 2:
+            if sum(1 for ln in between if _row_like(ln, scan)) >= 2:
                 return to_docling("table without vertical lines")
     letters = "".join(ln.text for ln in lines)
     if letters and len(_ARABIC.findall(letters)) > 0.2 * len(letters):
@@ -619,8 +625,9 @@ def _route(scan: PageScan, h_lines, v_lines, drawn, rotated: bool) -> None:
     for p in scan.pictures:
         if any(_wholly_inside(ln, p) for ln in lines):
             return to_docling("text on a picture")        # a slide background, a banner, a figure's labels
-    for d in drawn:
-        if (d[2] - d[0]) * (d[3] - d[1]) > 0.003 * width * scan.height and _text_inside(lines, *d):
+    for d in drawn:                               # big enough to be a figure (not a badge behind "2.2")
+        if (d[2] - d[0]) * (d[3] - d[1]) > 0.003 * width * scan.height and min(d[2] - d[0], d[3] - d[1]) >= 50 \
+                and _text_inside(lines, *d):
             return to_docling("drawing with text")
     gappy = sum(1 for ln in lines if _row_like(ln, scan) and not any(_inside_any(ln, g.box) for g in scan.grids))
     if gappy >= 3:
@@ -636,9 +643,10 @@ def _row_like(ln: Line, scan: PageScan) -> bool:
     a contents line, an equation with its number at the right, or code with a comment lined up at the right."""
     if scan.high(ln) or scan.low(ln) or _LEADER.search(ln.text):
         return False
-    frags = ln.frags[1:] if _separate_marker(ln) else ln.frags
-    return any(b.l - a.r > 1.8 * ln.size and not _NOT_A_CELL.match(b.text.strip())
-               for a, b in zip(frags, frags[1:]))
+    numbered = re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){0,2}\.?", ln.frags[0].text.strip())    # "1.4  Describe the..."
+    frags = ln.frags[1:] if _separate_marker(ln) or numbered else ln.frags
+    return any(b.l - a.r > 1.8 * ln.size and not _NOT_A_CELL.match(b.text.strip()) and not b.mono
+               for a, b in zip(frags, frags[1:]))    # code after a gap: a line number, or code lined up
 
 
 def _columns_in(ln: Line) -> bool:
@@ -789,12 +797,17 @@ class Book:
 
     def outline_level(self, page: int, text: str) -> int | None:
         key = _norm(text)
+        core = _CHAPTER.sub("", key)
         for title, level in self.outline.get(page, []) + self.outline.get(page - 1, []) + self.outline.get(page + 1, []):
             if key and (key == title or (len(key) > 8 and (title.startswith(key) or key.startswith(title)))):
+                return level
+            whole = _CHAPTER.sub("", title)            # "chapter 1 introduction to ..." on the bookmark
+            if len(core) > 12 and (core == whole or (core in whole and len(core) > 0.6 * len(whole))):
                 return level
         return None
 
 
+_CHAPTER = re.compile(r"^(?:(?:chapter|part|unit|lecture|module|appendix)\s+[0-9a-z]{1,4}\s*)")
 _ROMAN = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100}
 
 
@@ -855,9 +868,14 @@ def read_page(scan: PageScan, book: Book, heading_state: list[int]) -> list[Item
         left, right, gap = shape[ln.col]
         text = ln.text.strip()
         kind, level, marker = _classify(ln, text, scan, book, left, heading_state)
+        last = items[-1] if items else None
+        if (kind == "heading" and level and last is not None and last.kind in ("text", "list_item") and prev is not None
+                and prev.col == ln.col and prev.bold == ln.bold and abs(prev.size - ln.size) < 0.6
+                and prev.b - ln.t < 1.6 * shape[ln.col][2] + 1.5 and not _SENTENCE_END.search(prev.text.strip())
+                and book.outline_level(scan.number, text) is None):
+            kind, level = "text", 0                # "...similar hardware devices and" carries on: not a heading
         if kind == "list_item":
             marker, text = _split_marker(ln, text)
-        last = items[-1] if items else None
         if (kind == "list_item" and not _separate_marker(ln) and last is not None and last.kind == "text"
                 and prev is not None and prev.col == ln.col and prev.b - ln.t < 1.6 * gap + 1.5
                 and not _SENTENCE_END.search(prev.text.strip())):
@@ -889,6 +907,9 @@ def read_page(scan: PageScan, book: Book, heading_state: list[int]) -> list[Item
         prev = ln
     for g in pending_tables:
         items.append(Item("table", "", scan.number, g.box, grid=g))
+    for item in items:
+        if item.kind == "heading" and (len(item.text) > 200 or re.search(r"[.!?] [A-Z]", item.text)):
+            item.kind, item.level = "text", 0       # two sentences, or several lines: a paragraph in bold
     return items
 
 
@@ -927,6 +948,9 @@ def _indent(ln: Line, block: Item) -> str:
     return " " * max(0, round((ln.l - block.left) / width)) if width > 0 else ""
 
 
+_LABEL = re.compile(r"^[A-Z][A-Z ]{2,15}:\s+\S")      # "CONCEPT: All computers...", "NOTE: C++ is..."
+
+
 def _classify(ln: Line, text: str, scan: PageScan, book: Book, left: float, state: list[int]):
     body = book.body
     if scan.number <= 2 and ln.size >= 1.6 * body and len(text) < 150 and not state[1]:
@@ -942,7 +966,7 @@ def _classify(ln: Line, text: str, scan: PageScan, book: Book, left: float, stat
         return "caption", 0, ""
     if ln.size <= 0.85 * body and ln.b - scan.y0 < 0.25 * scan.height:
         return "footnote", 0, ""
-    short = len(text) < 120 and not text.endswith((".", ",", ";"))
+    short = len(text) < 120 and not text.endswith((".", ",", ";")) and not _LABEL.match(text)
     bigger = ln.size >= 1.12 * body or ln.bold and ln.size >= 1.05 * body
     numbered_bold = ln.bold and bool(re.match(r"\d+(\.\d+)*\.?\s+[A-Z]", text))   # "1 Introduction" in bold
     if (_separate_marker(ln) or _MARKER_PREFIX.match(text)) and not (short and (bigger or numbered_bold)):
@@ -1001,8 +1025,8 @@ def _continues(last: Item, kind: str, ln: Line, prev: Line, left, right, body, g
     ended = prev.r < right - 3 * body and _SENTENCE_END.search(prev.text.strip())
     if last.kind == "list_item":
         return abs(ln.l - last.left) < max(3, 0.6 * body) and not ended   # wrapped lines line up with its text
-    if ln.l > left + 0.8 * body and ln.l > prev.l + 0.8 * body:
-        return False                              # first-line indent: a new paragraph
+    if ln.l > left + 0.8 * body and ln.l > prev.l + 0.8 * body and _SENTENCE_END.search(prev.text.strip()):
+        return False                              # first-line indent after a full stop: a new paragraph
     if ended:
         return False                              # the line above ended short, with a full stop
     return True
@@ -1148,12 +1172,15 @@ def _level_headings(doc: DoclingDocument, book: Book) -> None:
                 item.level = state + 1 if state else 1
 
 
-def convert_pdf(path: Path, converter: Callable, saved_part: Callable[[str], Path]) -> tuple[DoclingDocument | None, bool, dict]:
+def convert_pdf(path: Path, converter: Callable, saved_part: Callable[[str], Path], workers: int = 1,
+                converter_name: str = "") -> tuple[DoclingDocument | None, bool, dict]:
     """Read a long PDF: the fast path for plain pages, Docling for the rest, in batches.
 
     converter() gives Docling's DocumentConverter; saved_part(key) is where a finished batch is kept.
-    Returns (document, whether every page was read, a short report). The document is None when the
-    file is short or mostly unusual pages: then Docling should read the whole file as before.
+    With workers > 1 and converter_name ("module:function", importable in a fresh process), that many
+    Docling processes read batches side by side. Returns (document, whether every page was read, a short
+    report). The document is None when the file is short or mostly unusual pages: then Docling should
+    read the whole file as before.
     """
     import pypdfium2 as pdfium
     from docling_core.types.doc import DoclingDocument, ImageRefMode, Size
@@ -1183,13 +1210,19 @@ def convert_pdf(path: Path, converter: Callable, saved_part: Callable[[str], Pat
         # Docling for the routed pages, BATCH_PAGES at a time; each finished batch is saved
         place: dict[int, tuple[DoclingDocument, int]] = {}      # page -> (batch document, its page number there)
         complete = True
-        for start in range(0, len(routed), BATCH_PAGES):
-            batch = routed[start:start + BATCH_PAGES]
-            saved = saved_part(hashlib.sha256(",".join(map(str, batch)).encode()).hexdigest()[:16])
+        batches = [routed[k:k + BATCH_PAGES] for k in range(0, len(routed), BATCH_PAGES)]
+        saved_of = [saved_part(hashlib.sha256(",".join(map(str, b)).encode()).hexdigest()[:16]) for b in batches]
+        todo = [k for k, saved in enumerate(saved_of) if not saved.exists()]
+        ready = _convert_side_by_side(path, [batches[k] for k in todo], workers, converter_name) \
+            if workers > 1 and converter_name and len(todo) > 1 else {}
+        ready = {todo[k]: value for k, value in ready.items()}
+        report["docling_workers"] = workers if ready else 1
+        for number, (batch, saved) in enumerate(zip(batches, saved_of)):
+            start = number * BATCH_PAGES
             if saved.exists():
                 part, done = DoclingDocument.load_from_json(saved), True
             else:
-                part, done = _convert_pages(pdf, batch, converter)
+                part, done = ready[number] if number in ready else _convert_pages(pdf, batch, converter)
                 if part is None:
                     part = DoclingDocument(name=path.stem)
                 if done:
@@ -1221,14 +1254,79 @@ def convert_pdf(path: Path, converter: Callable, saved_part: Callable[[str], Pat
                 parts.append(_to_document(path.stem, run, items_by_page))
             else:
                 part = place[run[0].number][0]
-                parts.append(part.filter(page_nrs={place[s.number][1] for s in run}))
-        document = DoclingDocument.concatenate(parts) if len(parts) > 1 else parts[0]
+                with warnings.catch_warnings():     # "Parent #/pictures/1 not found": a picture on another page
+                    warnings.simplefilter("ignore", UserWarning)
+                    parts.append(part.filter(page_nrs={place[s.number][1] for s in run}))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            document = DoclingDocument.concatenate(parts) if len(parts) > 1 else parts[0]
         document.name = path.stem
         _join_at_seams(document, {s.number: s.route for s in scans})
         _level_headings(document, book)
         return document, complete, report
     finally:
         pdf.close()
+
+
+def docling_workers() -> int:
+    """How many Docling processes read batches side by side: INGESTION_DOCLING_WORKERS, else 2 on a
+    computer with 8 or more cores (each process loads Docling's models: about 1.5 GB of memory)."""
+    value = os.getenv("INGESTION_DOCLING_WORKERS", "")
+    if value.isdigit() and int(value) > 0:
+        return int(value)
+    return 2 if (os.cpu_count() or 1) >= 8 else 1
+
+
+def _worker_start(threads: int) -> None:
+    """In each Docling process, before torch loads: share the cores out instead of each taking all."""
+    for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "DOCLING_NUM_THREADS"):
+        os.environ[name] = str(threads)
+
+
+def _worker_convert(path: str, pages: list[int], converter_name: str) -> tuple[dict | None, bool]:
+    """One batch in a Docling process. The document comes back as plain data."""
+    import importlib
+
+    import pypdfium2 as pdfium
+
+    module, function = converter_name.split(":")
+    converter = getattr(importlib.import_module(module), function)
+    pdf = pdfium.PdfDocument(path)
+    try:
+        part, done = _convert_pages(pdf, pages, converter)
+    finally:
+        pdf.close()
+    return (part.export_to_dict() if part is not None else None), done
+
+
+def _convert_side_by_side(path: Path, batches: list[list[int]], workers: int,
+                          converter_name: str) -> dict[int, tuple[DoclingDocument | None, bool]]:
+    """Batches read by several Docling processes at once. Whatever goes wrong here (a process that can't
+    start, runs out of memory or crashes), the batches it didn't finish are read one by one afterwards."""
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    from docling_core.types.doc import DoclingDocument
+
+    workers = min(workers, len(batches))
+    threads = max(1, (os.cpu_count() or 2) // workers)
+    out: dict[int, tuple[DoclingDocument | None, bool]] = {}
+    try:
+        with ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn"),
+                                 initializer=_worker_start, initargs=(threads,)) as pool:
+            jobs = {pool.submit(_worker_convert, str(path), batch, converter_name): k for k, batch in enumerate(batches)}
+            for job in as_completed(jobs):
+                k = jobs[job]
+                try:
+                    data, done = job.result()
+                except Exception:
+                    logger.exception("%s: a Docling process failed on pages %s", path.name, batches[k][:3])
+                    continue
+                out[k] = (DoclingDocument.model_validate(data) if data else None, done)
+                logger.info("%s: %d of %d Docling batches done (%d processes)", path.name, len(out), len(batches), workers)
+    except Exception:
+        logger.exception("%s: Docling processes stopped; reading the remaining batches one by one", path.name)
+    return out
 
 
 def _split_far_merges(part: DoclingDocument, batch: list[int]) -> None:

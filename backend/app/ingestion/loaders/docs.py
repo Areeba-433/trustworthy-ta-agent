@@ -108,7 +108,9 @@ def convert(path: Path, meta: ResourceMeta) -> tuple[DoclingDocument | None, boo
                 return cache_path(meta.file_sha256, PARSER, docling_version(), f"{variant}-part-{key}")
 
             try:
-                document, complete, report = fast_pdf.convert_pdf(path, _converter, batch_file)
+                document, complete, report = fast_pdf.convert_pdf(
+                    path, _converter, batch_file, workers=fast_pdf.docling_workers(),
+                    converter_name=f"{__name__}:_converter")
                 logger.info("%s: %s", meta.file_name, report)
             except Exception:                 # the fast path must never cost a file: Docling reads it whole
                 logger.exception("fast path failed on %s; Docling reads the whole file", meta.file_name)

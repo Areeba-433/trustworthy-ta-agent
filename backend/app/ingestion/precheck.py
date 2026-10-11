@@ -28,6 +28,8 @@ MIN_LETTERS_PER_PAGE = 25      # starting values: tune them on real samples late
 SCANNED_IMAGE_SHARE = 0.5
 LARGE_IMAGE_SHARE = 0.3
 GARBAGE_MAX = 0.15
+MIXED_SHARE = 0.1              # a digital file with a few picture-only or broken pages (a book's cover, one
+                               # scanned form) stays digital: those pages are reported, the rest is read as text
 
 
 class UnsupportedFileType(ValueError):
@@ -101,7 +103,8 @@ def _check_pdf(path: Path) -> PrecheckResult:
                 large.append(i + 1)
     finally:
         pdf.close()
+    problem = len(set(scanned) | set(garbage))
     return PrecheckResult(
-        source_type="scanned_pdf" if (scanned or garbage) else "pdf",
+        source_type="scanned_pdf" if problem > MIXED_SHARE * total else "pdf",
         pages_total=total, scanned_pages=scanned, garbage_pages=garbage, large_image_pages=large,
     )
