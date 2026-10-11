@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("tta.ingestion.fast_pdf")
 
-VERSION = 6                      # raise it whenever the fast path's output changes, so saved results are redone
+VERSION = 9                      # raise it whenever the fast path's output changes, so saved results are redone
 BATCH_PAGES = 50                 # pages per Docling run: each finished batch is saved, so a crash loses at most one
 ROUTE_ALL_ABOVE = 0.7            # when more than this share of pages needs Docling, Docling reads the whole file
 MIN_PAGES = 20                   # shorter files go straight to Docling; the fast path only pays off on long ones
@@ -72,6 +72,7 @@ class Frag:
     space_before: bool = False
     space_after: bool = False
     font: str = ""
+    base: float = 0.0        # the baseline the letters stand on: the same for "=", "_", "*" and "res" on one line
     x0: float = 0.0          # code: where the pen starts the first letter, and the width of one character, both
     pitch: float = 0.0       # from the PDF's own letter widths (letter shapes differ with the font the computer uses)
 
@@ -153,7 +154,7 @@ class PageScan:
 
 
 _FIXED_PITCH, _ITALIC, _FORCE_BOLD = 0x1, 0x40, 0x40000
-_MONO_NAMES = ("courier", "mono", "consol", "menlo", "code", "typewriter", "lucidaconsole", "inconsolata")
+_MONO_NAME = re.compile(r"courier|mono|consol|menlo|(?<!uni)code|typewriter|inconsolata")   # not "ArialUnicode"
 
 
 def _font(textpage, index: int) -> tuple[float, bool, bool, bool, str, int]:
@@ -170,7 +171,7 @@ def _font(textpage, index: int) -> tuple[float, bool, bool, bool, str, int]:
     # the name or the ForceBold flag; the weight alone is only a guess (Times-Roman can report 695), so it
     # counts later, and only against the weight of the page's ordinary text
     bold = any(w in name for w in ("bold", "black", "heavy", "demi")) or bool(flags.value & _FORCE_BOLD)
-    mono = bool(flags.value & _FIXED_PITCH) or any(m in name for m in _MONO_NAMES)
+    mono = bool(flags.value & _FIXED_PITCH) or bool(_MONO_NAME.search(name))
     italic = bool(flags.value & _ITALIC) or "italic" in name or "oblique" in name
     return round(size, 1), bold, mono, italic, name, weight
 
@@ -282,7 +283,8 @@ def _runs(textpage) -> tuple[list[Frag], list[tuple[str, float, float, float, fl
             turned = True
     frags: list[Frag] = []
     weights: list[int] = []
-    mono_fonts: set[str] = set()
+    mono_fonts: set[str] = set()                 # fonts that say they are monospaced
+    votes: dict[str, list[int]] = {}             # other fonts: [evenly spaced runs, runs that are not]
     x, y = ctypes.c_double(), ctypes.c_double()
     for run in runs:
         text = run["text"].strip()
@@ -292,21 +294,27 @@ def _runs(textpage) -> tuple[list[Frag], list[tuple[str, float, float, float, fl
         if run["i1"] > run["i0"] + 3:            # a second sample, so one bold or code word doesn't decide
             _, bold2, mono2, italic2, _, weight2 = _font(raw, (run["i0"] + run["i1"]) // 2)
             bold, mono, italic, weight = bold and bold2, mono and mono2, italic and italic2, min(weight, weight2)
-        if not mono and len(text) >= 6 and font not in mono_fonts:
-            mono = _even_spacing(raw, run["i0"])  # a code font whose name doesn't say so
         if mono and font:
             mono_fonts.add(font)
+        elif len(text) >= 6 and font and sum(votes.setdefault(font, [0, 0])) < 8:
+            votes[font][0 if _even_spacing(raw, run["i0"]) else 1] += 1     # a code font whose name doesn't say so
         frags.append(Frag(text, run["l"], run["b"], run["r"], run["t"], size, bold, mono, italic, run["i0"],
                           run["i1"], run["space_before"], run["text"].endswith(" "), font))
         weights.append(weight)
     usual: Counter = Counter()
     for f, w in zip(frags, weights):
-        usual[w] += len(f.text)
-    base = usual.most_common(1)[0][0] if usual else 400
+        if f.font not in mono_fonts:
+            usual[(f.font, w)] += len(f.text)
+    base_font, base = usual.most_common(1)[0][0] if usual else ("", 400)
     for f, w in zip(frags, weights):             # heavier than the page's ordinary text, by a clear margin
-        f.bold = f.bold or (w >= 600 and w - base >= 150)
+        f.bold = f.bold or (w >= 600 and w - base >= 150 and f.font != base_font and f.font not in mono_fonts)
+    mono_fonts |= {font for font, (even, uneven) in votes.items() if even > uneven}
     for f in frags:                              # every run in a font found to be monospaced is code
-        f.mono = f.mono or f.font in mono_fonts
+        f.mono = f.font in mono_fonts if f.font else f.mono
+        if pdfium_c.FPDFText_GetCharOrigin(raw, f.i0, ctypes.byref(x), ctypes.byref(y)):
+            f.base = y.value
+        else:
+            f.base = f.b
         if f.mono:
             pen = {}
             for i in range(f.i0, f.i1 + 1):
@@ -456,18 +464,29 @@ def _frames(paths, frags: list[Frag]) -> set[int]:
 
 def _group_lines(frags: list[Frag]) -> list[Line]:
     """Runs on the same baseline become one line; lines are sorted top to bottom."""
-    frags.sort(key=lambda f: (-(f.b + f.t) / 2, f.l))
+    frags.sort(key=lambda f: (-f.base, f.l))
     lines: list[Line] = []
+    bases: dict[int, float] = {}
     for f in frags:
+        # same baseline = same line, whatever the letters' shapes ("=" and "*" are short, "_" sits low)
+        same = [ln for ln in lines[-3:] if abs(bases[id(ln)] - f.base) <= 0.25 * min(f.size, ln.size)]
+        if same:
+            line = min(same, key=lambda ln: abs(bases[id(ln)] - f.base))
+            line.frags.append(f)
+            line.frags.sort(key=lambda g: g.l)
+            continue
         for line in lines[-3:]:
             overlap = min(line.t, f.t) - max(line.b, f.b)
             small = f.size < 0.85 * line.size and line.b <= f.b <= line.t      # a superscript or footnote mark
-            if overlap > 0.5 * min(line.t - line.b, f.t - f.b) or small:
+            flat = (set(f.text) == {"_"} and line.b - 0.35 * line.size <= f.t <= line.b + 0.3 * (line.t - line.b)
+                    and line.l - f.size <= f.l <= line.r + f.size)                 # "_" sits below the baseline
+            if overlap > 0.5 * min(line.t - line.b, f.t - f.b) or small or flat:
                 line.frags.append(f)
                 line.frags.sort(key=lambda g: g.l)
                 break
         else:
             lines.append(Line([f]))
+            bases[id(lines[-1])] = f.base
     lines.sort(key=lambda ln: (-ln.t, ln.l))
     # a superscript or subscript met before its own line: put it into the line it sits on
     out: list[Line] = []
@@ -632,6 +651,19 @@ def _route(scan: PageScan, h_lines, v_lines, drawn, rotated: bool) -> None:
     gappy = sum(1 for ln in lines if _row_like(ln, scan) and not any(_inside_any(ln, g.box) for g in scan.grids))
     if gappy >= 3:
         return to_docling("columns of text (a table without lines)")
+    # two listings side by side: code, a wide gap, more code starting at the same place on several lines
+    starts: Counter = Counter()
+    for ln in lines:
+        for k in range(1, len(ln.frags)):
+            a, b = ln.frags[k - 1], ln.frags[k]
+            if not (a.mono and b.mono and b.l - a.r > 1.8 * ln.size):
+                continue
+            left, right = Line(ln.frags[:k]).text.strip(), Line(ln.frags[k:]).text.strip()
+            if (len(left) >= 8 and len(right) >= 8 and re.search(r"[A-Za-z]{2}", right)
+                    and not _NOT_A_CELL.match(right) and not re.fullmatch(r"\d{1,4}", left)):
+                starts[round(b.l / 6)] += 1   # (not a line number and its code, a value after a label, a box's "*")
+    if starts and max(starts.values()) >= 3:
+        return to_docling("two columns of code")
 
 
 _LEADER = re.compile(r"\.{5,}|(?:\. ){4,}")                     # "Introduction ........ 1" in a contents page
@@ -856,6 +888,7 @@ def read_page(scan: PageScan, book: Book, heading_state: list[int]) -> list[Item
             lines.append(Line(outside, ln.col))
     shape = {col: _shape([ln for ln in lines if ln.col == col], body, scan)
              for col in {ln.col for ln in lines}}      # each column has its own left edge, right edge, spacing
+    lines, notes = _margin_notes(lines, shape, body)
 
     items: list[Item] = []
     pending_tables = sorted(scan.grids, key=lambda g: -g.ys[0])
@@ -907,6 +940,8 @@ def read_page(scan: PageScan, book: Book, heading_state: list[int]) -> list[Item
         prev = ln
     for g in pending_tables:
         items.append(Item("table", "", scan.number, g.box, grid=g))
+    for ln in notes:                               # labels in the margin ("VideoNote"), after the page's text
+        items.append(Item("text", ln.text.strip(), scan.number, (ln.l, ln.b, ln.r, ln.t), left=ln.l))
     for item in items:
         if item.kind == "heading" and (len(item.text) > 200 or re.search(r"[.!?] [A-Z]", item.text)):
             item.kind, item.level = "text", 0       # two sentences, or several lines: a paragraph in bold
@@ -914,6 +949,23 @@ def read_page(scan: PageScan, book: Book, heading_state: list[int]) -> list[Item
 
 
 _SOFT_HYPHENS = ("\x02", "\u00ad", "\ufffe")
+
+
+def _margin_notes(lines: list[Line], shape: dict, body: float) -> tuple[list[Line], list[Line]]:
+    """A label in the margin ("VideoNote") on the same baseline as a line of text is not part of that line:
+    left in, it lands inside the paragraph, even inside a word broken at the line before."""
+    kept, notes = [], []
+    for ln in lines:
+        left = shape[ln.col][0]
+        k = next((i for i, f in enumerate(ln.frags) if f.l >= left - 2), 0)
+        head = ln.frags[:k]
+        if (head and head[-1].r < left - body and ln.frags[k].l - head[-1].r > body
+                and re.search(r"[A-Za-z]{3}", " ".join(f.text for f in head)) and not all(f.mono for f in ln.frags)):
+            notes.append(Line(head, ln.col))
+            kept.append(Line(ln.frags[k:], ln.col))
+        else:
+            kept.append(ln)
+    return kept, notes
 
 
 def _join_lines(above: str, below: str) -> str:
@@ -1129,6 +1181,7 @@ def _join_at_seams(doc: DoclingDocument, route: dict[int, str]) -> None:
         if (first is None or first is last or route.get(page) == route.get(page + 1)
                 or not isinstance(last, TextItem) or not isinstance(first, TextItem)
                 or last.label != DocItemLabel.TEXT or first.label != DocItemLabel.TEXT
+                or len(last.text.split()) < 6             # a label ("False", "Step 3"), not a cut paragraph
                 or _SENTENCE_END.search(last.text.rstrip())):
             continue
         last.orig = _join_lines(last.orig or last.text, first.orig or first.text)

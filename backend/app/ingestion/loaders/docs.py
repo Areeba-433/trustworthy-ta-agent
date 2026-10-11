@@ -48,7 +48,12 @@ KIND_BY_LABEL = {
     "list_item": "list_item",
     "caption": "caption",
     "table": "table",
+    "document_index": "table",          # a book's contents pages: Docling reads them as a table
     "code": "code",
+    "checkbox_selected": "paragraph",   # Docling sometimes takes a drawing of boxes (an array, a stack) for a
+    "checkbox_unselected": "paragraph", # form: the words in it are still the book's words
+    "handwritten_text": "paragraph",
+    "reference": "paragraph",
 }
 NOT_CLEANED = {"table", "code", "formula"}      # cleaning could change their meaning
 REPEATS_CHECKED = {"paragraph", "caption"}       # where headers and footers Docling missed end up
@@ -152,21 +157,26 @@ def _kind(item, document: DoclingDocument) -> str | None:
     return KIND_BY_LABEL.get(item.label.value)
 
 
-def _inside_table(item, document: DoclingDocument) -> bool:
-    """Word lists the text of formatted table cells again as separate items; the table block already has it."""
-    from docling_core.types.doc import TableItem
-
+def _inside(item, document: DoclingDocument, kind) -> bool:
     parent = item.parent.resolve(document) if item.parent else None
     while parent is not None:
-        if isinstance(parent, TableItem):
+        if isinstance(parent, kind):
             return True
         parent = parent.parent.resolve(document) if parent.parent else None
     return False
 
 
+def _inside_table(item, document: DoclingDocument) -> bool:
+    """Word lists the text of formatted table cells again as separate items; the table block already has it.
+    A table's caption and its notes hang under the table too, but they are not in its cells: they stay."""
+    from docling_core.types.doc import TableItem
+
+    return item.label.value not in ("caption", "footnote") and _inside(item, document, TableItem)
+
+
 def walk(document: DoclingDocument, source_type: str, title: str) -> list[dict]:
     """Docling's items in reading order -> raw blocks (text not cleaned yet), each with its heading path."""
-    from docling_core.types.doc import ContentLayer
+    from docling_core.types.doc import ContentLayer, PictureItem
 
     raw: list[dict] = []
     headings: list[tuple[int, str]] = []    # the headings above the current item: (level, text)
@@ -174,7 +184,9 @@ def walk(document: DoclingDocument, source_type: str, title: str) -> list[dict]:
     slide_title: str | None = None
     title_seen = False
     tables = None                           # Markdown writer for tables, made once (see below)
-    for item, _ in document.iterate_items(included_content_layers={ContentLayer.BODY, ContentLayer.NOTES, ContentLayer.FURNITURE}):
+    # traverse_pictures: the words inside a diagram (labels, boxes, a UML class) are text of the book too
+    for item, _ in document.iterate_items(included_content_layers={ContentLayer.BODY, ContentLayer.NOTES, ContentLayer.FURNITURE},
+                                          traverse_pictures=True):
         page = item.prov[0].page_no if getattr(item, "prov", None) else unit
         if source_type == "pptx" and page != unit:
             headings, slide_title = [], None        # a new slide starts with no headings
@@ -182,6 +194,9 @@ def walk(document: DoclingDocument, source_type: str, title: str) -> list[dict]:
         kind = _kind(item, document)
         if kind is None or (kind != "table" and _inside_table(item, document)):
             continue
+        in_picture = kind != "caption" and _inside(item, document, PictureItem)
+        if in_picture and kind == "heading":
+            kind = "paragraph"                  # a label in a diagram never starts a section
         if kind == "table":
             if tables is None:
                 # item.export_to_markdown(doc=...) builds this writer again for every table, and building it
@@ -206,6 +221,8 @@ def walk(document: DoclingDocument, source_type: str, title: str) -> list[dict]:
                 headings = [h for h in headings if h[0] < level] + [(level, name)]
         context = [slide_title or f"Slide {unit}"] if source_type == "pptx" else []
         extra = {"ref": item.self_ref}
+        if in_picture:
+            extra["in_picture"] = True      # a label inside a figure, not running text
         pages = sorted({p.page_no for p in item.prov}) if getattr(item, "prov", None) else []
         if len(pages) > 1:
             extra["pages"] = pages          # a paragraph that runs onto the next page: Docling joins the two halves
@@ -222,12 +239,12 @@ def to_blocks(raw: list[dict], source_type: str) -> list[Block]:
     if source_type in ("pdf", "pptx"):
         lines_by_unit: dict[int, list[str]] = defaultdict(list)
         for r in raw:
-            if r["kind"] in REPEATS_CHECKED:
+            if r["kind"] in REPEATS_CHECKED and not r["extra"].get("in_picture"):
                 lines_by_unit[r["unit"]].append(r["text"])
         repeated = find_repeated_lines(lines_by_unit)
     blocks: list[Block] = []
-    for r in raw:
-        if r["kind"] in REPEATS_CHECKED and is_repeated(r["text"], repeated):
+    for r in raw:                           # a figure's labels ("null", "Pointer") may repeat: they stay
+        if r["kind"] in REPEATS_CHECKED and not r["extra"].get("in_picture") and is_repeated(r["text"], repeated):
             continue
         text = r["text"] if r["kind"] in NOT_CLEANED or r["label"] in NOT_CLEANED else clean_text(r["text"])
         if not text.strip():
