@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("tta.ingestion.docs")
 
 PARSER = "docling"
-CACHE_VARIANT = "no-ocr"     # change this whenever the conversion options change, so old saved results aren't reused
+CACHE_VARIANT = "no-ocr-headings-fast-tables"     # change this whenever the conversion options change, so old saved results aren't reused
 
 # Docling's label for an item -> the block kind in our contract. Labels not listed (pictures,
 # page headers and footers, form fields) carry no text we keep.
@@ -59,10 +59,15 @@ def docling_version() -> str:
 def _converter():
     """Docling's converter, built once: setting it up loads its models, so every file reuses it."""
     from docling.datamodel.base_models import InputFormat
-    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode, TableStructureOptions
     from docling.document_converter import DocumentConverter, PdfFormatOption
 
-    pdf_options = PdfPipelineOptions(do_ocr=False, do_table_structure=True)   # scans go to the OCR loader
+    pdf_options = PdfPipelineOptions(
+        do_ocr=False,                       # scans go to the OCR loader
+        do_table_structure=True,
+        table_structure_options=TableStructureOptions(mode=TableFormerMode.FAST),   # 1.2x faster, same tables in our test
+    )
+    pdf_options.heading_hierarchy_options.enabled = True    # otherwise every PDF heading comes back as level 1
     return DocumentConverter(
         allowed_formats=[InputFormat.PDF, InputFormat.DOCX, InputFormat.PPTX],
         format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_options)},
@@ -107,12 +112,26 @@ def document_title(document: DoclingDocument, source_type: str, file_name: str) 
 def _kind(item, document: DoclingDocument) -> str | None:
     from docling_core.types.doc import ContentLayer, GroupLabel
 
+    if item.content_layer == ContentLayer.FURNITURE:      # Word keeps footnotes here, beside page headers and footers
+        return "paragraph" if item.label.value == "footnote" else None
     if item.content_layer == ContentLayer.NOTES:          # PowerPoint: speaker notes, and reviewers' comments
         parent = item.parent.resolve(document) if item.parent else None
         if getattr(parent, "label", None) == GroupLabel.COMMENT_SECTION:
             return None
         return "slide_notes" if item.label.value == "text" else None
     return KIND_BY_LABEL.get(item.label.value)
+
+
+def _inside_table(item, document: DoclingDocument) -> bool:
+    """Word lists the text of formatted table cells again as separate items; the table block already has it."""
+    from docling_core.types.doc import TableItem
+
+    parent = item.parent.resolve(document) if item.parent else None
+    while parent is not None:
+        if isinstance(parent, TableItem):
+            return True
+        parent = parent.parent.resolve(document) if parent.parent else None
+    return False
 
 
 def walk(document: DoclingDocument, source_type: str, title: str) -> list[dict]:
@@ -124,15 +143,24 @@ def walk(document: DoclingDocument, source_type: str, title: str) -> list[dict]:
     unit = 1                                # current page (PDF) or slide (PPTX)
     slide_title: str | None = None
     title_seen = False
-    for item, _ in document.iterate_items(included_content_layers={ContentLayer.BODY, ContentLayer.NOTES}):
+    tables = None                           # Markdown writer for tables, made once (see below)
+    for item, _ in document.iterate_items(included_content_layers={ContentLayer.BODY, ContentLayer.NOTES, ContentLayer.FURNITURE}):
         page = item.prov[0].page_no if getattr(item, "prov", None) else unit
         if source_type == "pptx" and page != unit:
             headings, slide_title = [], None        # a new slide starts with no headings
         unit = page
         kind = _kind(item, document)
-        if kind is None:
+        if kind is None or (kind != "table" and _inside_table(item, document)):
             continue
-        text = item.export_to_markdown(doc=document) if kind == "table" else item.text
+        if kind == "table":
+            if tables is None:
+                # item.export_to_markdown(doc=...) builds this writer again for every table, and building it
+                # checks the whole document: a 1,200-page book with 400 tables took almost 2 minutes that way.
+                from docling_core.transforms.serializer.markdown import MarkdownDocSerializer
+                tables = MarkdownDocSerializer(doc=document)
+            text = tables.serialize(item=item).text
+        else:
+            text = item.text
         if not text.strip():
             continue
         if kind == "heading":
@@ -148,6 +176,9 @@ def walk(document: DoclingDocument, source_type: str, title: str) -> list[dict]:
                 headings = [h for h in headings if h[0] < level] + [(level, name)]
         context = [slide_title or f"Slide {unit}"] if source_type == "pptx" else []
         extra = {"ref": item.self_ref}
+        pages = sorted({p.page_no for p in item.prov}) if getattr(item, "prov", None) else []
+        if len(pages) > 1:
+            extra["pages"] = pages          # a paragraph that runs onto the next page: Docling joins the two halves
         if kind == "list_item" and getattr(item, "marker", ""):
             extra["marker"] = item.marker
         raw.append({"kind": kind, "label": item.label.value, "text": text, "unit": unit,
@@ -207,7 +238,9 @@ def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
         warnings.append(messages.GARBLED)
     units = sorted(document.pages) if source_type != "docx" else [1]     # DOCX has no pages
     if source_type != "docx":
-        empty = sorted(set(units) - {b.loc.page or b.loc.slide for b in blocks})
+        covered = {b.loc.page or b.loc.slide for b in blocks}
+        covered |= {page for b in blocks for page in b.extra.get("pages", [])}
+        empty = sorted(set(units) - covered)
         if empty:
             warnings.append(messages.no_text_units("Pages" if source_type == "pdf" else "Slides", empty))
     if meta.precheck.large_image_pages:

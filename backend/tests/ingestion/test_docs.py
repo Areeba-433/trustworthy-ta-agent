@@ -138,6 +138,48 @@ def test_numbered_list_markers_are_kept(normalization_docx, data_dir):
     assert [b.extra.get("marker") for b in doc.blocks if b.text in ("Find the key", "Split the table")] == ["1.", "2."]
 
 
+def test_table_cells_are_not_repeated_as_paragraphs(tmp_path, data_dir):
+    d = docx.Document()
+    d.add_heading("Marks", level=1)
+    table = d.add_table(rows=2, cols=2)
+    for c, value in enumerate(["Student", "Marks"]):
+        table.cell(0, c).paragraphs[0].add_run(value).bold = True     # bold headers, as in most real tables
+    table.cell(1, 0).text, table.cell(1, 1).text = "Ali", "18"
+    path = tmp_path / "marks.docx"
+    d.save(path)
+    doc = ingest_file(path, "r-marks", "c1")
+    assert [b.kind for b in doc.blocks if "Student" in b.text] == ["table"]
+
+
+def test_word_footnotes_are_kept_but_page_headers_are_not(tmp_path, data_dir):
+    """Docling files Word footnotes beside page headers and footers; only the footnotes are content."""
+    from docx.opc.constants import RELATIONSHIP_TYPE
+    from docx.opc.packuri import PackURI
+    from docx.opc.part import Part
+    from docx.oxml import parse_xml
+
+    w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+    d = docx.Document()
+    d.sections[0].header.paragraphs[0].text = "Lecture notes, Fall 2026"
+    d.add_heading("Normal forms", level=1)
+    p = d.add_paragraph("Codd defined the first three normal forms.")
+    footnotes = (f'<w:footnotes {w}>'
+                 '<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>'
+                 '<w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>'
+                 '<w:footnote w:id="1"><w:p><w:r><w:t>He published them in 1970 and 1971.</w:t></w:r></w:p></w:footnote>'
+                 '</w:footnotes>')
+    part = Part(PackURI("/word/footnotes.xml"),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml",
+                footnotes.encode("utf-8"), d.part.package)
+    d.part.relate_to(part, RELATIONSHIP_TYPE.FOOTNOTES)
+    p._p.append(parse_xml(f'<w:r {w}><w:footnoteReference w:id="1"/></w:r>'))
+    path = tmp_path / "footnote.docx"
+    d.save(path)
+    doc = ingest_file(path, "r-footnote", "c1")
+    assert any("published them in 1970" in b.text for b in doc.blocks)
+    assert not any("Lecture notes" in b.text for b in doc.blocks)
+
+
 # ---------------------------------------------------------------------------
 # PPTX (real Docling, fast)
 # ---------------------------------------------------------------------------
@@ -193,6 +235,16 @@ def pdf_blocks():
     return docs.to_blocks(docs.walk(d, "pdf", docs.document_title(d, "pdf", "lecture5.pdf")), "pdf")
 
 
+def test_pdf_options_keep_heading_levels_and_use_fast_tables():
+    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.pipeline_options import TableFormerMode
+
+    options = docs._converter().format_to_options[InputFormat.PDF].pipeline_options
+    assert options.do_ocr is False                                       # scans go to the OCR loader
+    assert options.heading_hierarchy_options.enabled                     # otherwise every heading is level 1
+    assert options.table_structure_options.mode == TableFormerMode.FAST  # 1.2x faster on the 150-page book
+
+
 def test_pdf_blocks_carry_their_page_and_heading_path():
     blocks = pdf_blocks()
     assert [(b.loc.page, b.kind, b.heading_path) for b in blocks] == [
@@ -211,6 +263,25 @@ def test_pdf_headers_and_footers_are_dropped():
     assert not any("Database Systems" in b.text or b.text.strip() in {"1", "2", "3"} for b in pdf_blocks())
 
 
+def test_a_long_book_makes_one_table_writer(monkeypatch):
+    """Making Docling's table writer checks the whole document, so doing it per table is slow on long books."""
+    from docling_core.transforms.serializer import markdown
+
+    made, real = [], markdown.MarkdownDocSerializer
+    monkeypatch.setattr(markdown, "MarkdownDocSerializer", lambda **kw: made.append(1) or real(**kw))
+    d = lecture_pdf()
+    for page in (3, 4):
+        cells = [TableCell(text=value, start_row_offset_idx=r, end_row_offset_idx=r + 1,
+                           start_col_offset_idx=0, end_col_offset_idx=1, column_header=r == 0)
+                 for r, value in enumerate(["step", str(page)])]
+        d.add_table(TableData(num_rows=2, num_cols=1, table_cells=cells),
+                    prov=ProvenanceItem(page_no=page, bbox=BoundingBox(l=50, t=50, r=500, b=80), charspan=(0, 0)))
+    blocks = docs.to_blocks(docs.walk(d, "pdf", "Lecture 5: Joins"), "pdf")
+    assert [b.loc.page for b in blocks if b.kind == "table"] == [2, 3, 4]
+    assert next(b.text for b in blocks if b.kind == "table").startswith("|   id | name   |")
+    assert len(made) == 1
+
+
 def test_pdf_quality_report(monkeypatch, data_dir):
     monkeypatch.setattr(docs, "convert", lambda path, meta: (lecture_pdf(), True))
     doc = docs.load(Path("lecture5.pdf"), pdf_meta())
@@ -218,6 +289,20 @@ def test_pdf_quality_report(monkeypatch, data_dir):
     assert doc.quality.status == "ok" and doc.quality.units_total == 4
     assert doc.quality.warnings == [messages.no_text_units("Pages", [4])]
     assert doc.quality.chars_total == sum(len(b.text) for b in doc.blocks)
+
+
+def test_a_paragraph_running_onto_the_next_page_counts_for_both_pages(monkeypatch, data_dir):
+    def on(page: int) -> ProvenanceItem:
+        return ProvenanceItem(page_no=page, bbox=BoundingBox(l=50, t=50, r=500, b=80), charspan=(0, 0))
+
+    d = lecture_pdf()
+    item = d.add_text(DocItemLabel.TEXT, "This paragraph starts on page 3 and ends on page 4.", prov=on(3))
+    item.prov.append(on(4))                  # Docling joins the two halves into one item
+    monkeypatch.setattr(docs, "convert", lambda path, meta: (d, True))
+    doc = docs.load(Path("lecture5.pdf"), pdf_meta())
+    assert doc.quality.warnings == []        # page 4 isn't reported as having no text
+    block = text_of(doc, "This paragraph starts")
+    assert block.loc.page == 3 and block.extra["pages"] == [3, 4]
 
 
 def test_a_partly_read_file_is_marked_degraded(monkeypatch, data_dir):
