@@ -1,4 +1,3 @@
-"""OCR engine settings shared by the OCR track and Areeba's picture OCR: one decision, one place."""
 from docling.datamodel.pipeline_options import EasyOcrOptions, OcrMode, OcrOptions, TesseractCliOcrOptions
 
 from app.core.config import settings
