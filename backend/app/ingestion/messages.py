@@ -11,7 +11,7 @@ INTERNAL = "Something went wrong while reading this file. Please try again later
 
 
 def format_ranges(nums: list[int]) -> str:
-    """[3, 4, 5, 9] -> '3 to 5, 9'"""
+    """[3, 7, 8, 9] -> '3, 7 to 9'"""
     groups: list[list[int]] = []
     for n in sorted(set(nums)):
         if groups and n == groups[-1][-1] + 1:
@@ -32,3 +32,7 @@ def no_text_units(unit_name: str, units: list[int]) -> str:
     if len(set(units)) == 1:
         return f"{unit_name.removesuffix('s')} {units[0]} has no readable text (it may be a picture only)."
     return f"{unit_name} {format_ranges(units)} have no readable text (they may be pictures only)."
+
+
+def too_many_scanned_pages(limit: int) -> str:
+    return f"This scanned file has too many pages to read at once. Please split it into files of {limit} pages or fewer."
