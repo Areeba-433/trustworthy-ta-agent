@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("tta.ingestion.fast_pdf")
 
-VERSION = 9                      # raise it whenever the fast path's output changes, so saved results are redone
+VERSION = 11                      # raise it whenever the fast path's output changes, so saved results are redone
 BATCH_PAGES = 50                 # pages per Docling run: each finished batch is saved, so a crash loses at most one
 ROUTE_ALL_ABOVE = 0.7            # when more than this share of pages needs Docling, Docling reads the whole file
 MIN_PAGES = 20                   # shorter files go straight to Docling; the fast path only pays off on long ones
@@ -145,6 +145,7 @@ class PageScan:
     route: str = "fast"      # "fast" or "docling"
     reason: str = ""
     y0: float = 0.0          # bottom of the visible page (its crop box), as text positions count from there
+    x0: float = 0.0          # left of the visible page: Docling measures its boxes from this corner
 
     def low(self, ln: Line) -> bool:
         return ln.b - self.y0 < 0.12 * self.height
@@ -244,6 +245,8 @@ def _runs(textpage) -> tuple[list[Frag], list[tuple[str, float, float, float, fl
     runs: list[dict] = []
     cur = None
     turned = False
+    backwards = 0                                 # letters placed right to left: mirrored or right-to-left text
+    last = None
     count = pdfium_c.FPDFText_CountChars(raw)
     pair = -1
     for i in range(count):
@@ -268,6 +271,9 @@ def _runs(textpage) -> tuple[list[Frag], list[tuple[str, float, float, float, fl
         obj = pdfium_c.FPDFText_GetTextObject(raw, i)
         obj = ctypes.cast(obj, ctypes.c_void_p).value if obj else None
         height = max(box[3] - box[1], 1.0)
+        if last is not None and obj == last[0] and box[2] <= last[1] + 0.5 and abs(box[1] - last[2]) < 0.5 * height:
+            backwards += 1
+        last = (obj, box[0], box[1])
         tall = max(height, cur["t"] - cur["b"]) if cur is not None else height     # "_" or "." is flat
         if cur is not None and obj == cur["obj"] and abs(box[1] - cur["b"]) < 0.5 * tall \
                 and -0.5 * height < box[0] - cur["r"] < 1.2 * max(height, cur["t"] - cur["b"]):
@@ -281,6 +287,8 @@ def _runs(textpage) -> tuple[list[Frag], list[tuple[str, float, float, float, fl
             runs.append(cur)
         if not turned and abs(pdfium_c.FPDFText_GetCharAngle(raw, i)) > 0.01 and cur["i0"] == i:
             turned = True
+    if backwards >= 3:
+        turned = True
     frags: list[Frag] = []
     weights: list[int] = []
     mono_fonts: set[str] = set()                 # fonts that say they are monospaced
@@ -399,12 +407,13 @@ def scan_page(pdf, index: int) -> PageScan:
     gutter = _gutter(lines, x0, width)
     if gutter:
         lines = _column_lines(frags, gutter)
-    scan = PageScan(index + 1, width, height, lines, [], pictures, y0=min(y0, y1))
+    scan = PageScan(index + 1, width, height, lines, [], pictures, y0=min(y0, y1), x0=min(x0, x1))
     if len(shaded) >= 3:
         drawn += shaded                           # many filled boxes: striped table rows or a bar chart
     _route(scan, h_lines, v_lines, drawn, rotated or page.get_rotation() != 0)
     for grid in scan.grids:
-        _fill_grid(grid, chars)
+        if not grid.cells:                        # a ruled table; tables of aligned text come filled
+            _fill_grid(grid, chars)
     return scan
 
 
@@ -588,6 +597,12 @@ def _route(scan: PageScan, h_lines, v_lines, drawn, rotated: bool) -> None:
 
     if any(ln.col >= 0 for ln in lines) and (h_lines or v_lines or scan.pictures):
         return to_docling("two columns with tables or pictures")
+    aligned = _aligned_tables(scan) if not any(ln.col >= 0 for ln in lines) else []
+    scan.grids.extend(aligned)                    # tables made of text lined up in columns, read here
+
+    def covered(x0, y0, x1, y1) -> bool:          # every line in this box is inside a table read here
+        inside = [ln for ln in lines if x0 - 2 <= (ln.l + ln.r) / 2 <= x1 + 2 and y0 - 2 <= (ln.b + ln.t) / 2 <= y1 + 2]
+        return bool(inside) and all(any(_inside_any(ln, g.box) for g in scan.grids) for ln in inside)
 
     # Ruled tables: group the drawn lines that touch each other.
     groups: list[dict] = []
@@ -609,7 +624,7 @@ def _route(scan: PageScan, h_lines, v_lines, drawn, rotated: bool) -> None:
     for g in groups:
         x0, y0, x1, y1 = g["box"]
         if not g["v"]:
-            if len(g["h"]) >= 2 and _text_inside(lines, x0, y0 - 2, x1, y1 + 2):
+            if len(g["h"]) >= 2 and _text_inside(lines, x0, y0 - 2, x1, y1 + 2) and not covered(x0, y0, x1, y1):
                 return to_docling("table without vertical lines")
             for a0, a1, pos in g["h"]:
                 rules.setdefault((round(a0 / 4), round(a1 / 4)), []).append(pos)
@@ -629,13 +644,16 @@ def _route(scan: PageScan, h_lines, v_lines, drawn, rotated: bool) -> None:
         if not full or len(xs) < 3 or len(ys) < 3:
             return to_docling("table with merged cells, or a drawing")
         scan.grids.append(Grid(xs, ys))
+    ruled = [g for g in scan.grids if not any(g is a for a in aligned)]
+    scan.grids = ruled + [a for a in aligned if not any(_boxes_meet(a.box, r.box) for r in ruled)]
     for (a0, a1), ys in rules.items():          # rules of the same width, above and below a table
         ys = sorted(ys)
         for low, high in zip(ys, ys[1:]):
             if high - low > 0.5 * scan.height:
                 continue                          # a rule under the header and one over the footer
             between = [ln for ln in lines if low - 1 < (ln.b + ln.t) / 2 < high + 1
-                       and a0 * 4 - 4 <= ln.l and ln.r <= a1 * 4 + 4]
+                       and a0 * 4 - 4 <= ln.l and ln.r <= a1 * 4 + 4
+                       and not any(_inside_any(ln, g.box) for g in scan.grids)]
             if sum(1 for ln in between if _row_like(ln, scan)) >= 2:
                 return to_docling("table without vertical lines")
     letters = "".join(ln.text for ln in lines)
@@ -679,6 +697,104 @@ def _row_like(ln: Line, scan: PageScan) -> bool:
     frags = ln.frags[1:] if _separate_marker(ln) or numbered else ln.frags
     return any(b.l - a.r > 1.8 * ln.size and not _NOT_A_CELL.match(b.text.strip()) and not b.mono
                for a, b in zip(frags, frags[1:]))    # code after a gap: a line number, or code lined up
+
+
+def _boxes_meet(a, b) -> bool:
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def _aligned_tables(scan: PageScan) -> list[Grid]:
+    """Tables with no grid of lines: text lined up in columns ("Term   What it means"), rows one under another.
+
+    Column starts are where text begins after a wide gap, on at least two rows. A line that starts in the
+    first column begins a row; a line that starts further right carries on the cells above (a wrapped
+    description). The table ends at a wide vertical gap, at code, or at a line that runs across a column
+    start (ordinary text). Anything unclear is left alone, and the page goes to Docling as before.
+    """
+    lines, out, i = scan.lines, [], 0
+    while i < len(lines):
+        if lines[i].mono or not _row_like(lines[i], scan):
+            i += 1
+            continue
+        j = i + 1                                 # the block: lines close under each other
+        while j < len(lines) and not lines[j].mono and lines[j].col == lines[i].col \
+                and lines[j - 1].b - lines[j].t < 1.2 * max(lines[j].size, lines[j - 1].size):
+            j += 1
+        grid, used = _table_from(lines[i:j], scan)
+        if grid is not None:
+            out.append(grid)
+            i += used
+        else:
+            i += 1
+    return out
+
+
+def _table_from(block: list[Line], scan: PageScan) -> tuple[Grid | None, int]:
+    def starts_of(ln: Line) -> list[float]:
+        frags = ln.frags[1:] if _separate_marker(ln) else ln.frags
+        return [frags[0].l] + [b.l for a, b in zip(frags, frags[1:]) if b.l - a.r > 1.8 * ln.size]
+
+    found = [x for ln in block if _row_like(ln, scan) for x in starts_of(ln)]
+    cols: list[list[float]] = []
+    for x in sorted(found):
+        if cols and x - cols[-1][-1] <= 6:
+            cols[-1].append(x)
+        else:
+            cols.append([x])
+    starts = [min(c) for c in cols if len(c) >= 2]
+    if len(starts) < 2:
+        return None, 0
+    body = Counter(round(ln.l) for ln in scan.lines if len(ln.text) > 40)
+    if body and abs(starts[1] - body.most_common(1)[0][0]) <= 4 and starts[0] < starts[1] - 40:
+        return None, 0                            # a label in the margin beside a paragraph, not a table
+    rows: list[list[list[str]]] = []
+    tops: list[float] = []
+    bottoms: list[float] = []
+    used = 0
+    for ln in block:
+        cells: dict[int, list[Frag]] = {}
+        ok = True
+        for f in ln.frags:
+            k = max((n for n, x in enumerate(starts) if x <= f.l + 4), default=-1)
+            if k < 0 or (k + 1 < len(starts) and f.r > starts[k + 1] - 1):
+                ok = False                        # runs across a column start: ordinary text, the table ended
+                break
+            cells.setdefault(k, []).append(f)
+        if not ok:
+            break
+        texts = {k: Line(fs).text.strip() for k, fs in cells.items()}
+        if 0 in cells or not rows:
+            rows.append([texts.get(k, "") for k in range(len(starts))])
+            tops.append(ln.t)
+        else:                                     # a wrapped cell: carries on the row above
+            for k, t in texts.items():
+                rows[-1][k] = _join_lines(rows[-1][k], t).replace("\n", " ") if rows[-1][k] else t
+        bottoms.append(ln.b)
+        used += 1
+    full_rows = sum(1 for r in rows if sum(1 for c in r if c) >= 2)
+    if used < 3 or len(rows) < 2 or full_rows < 2 or any(not r[0] for r in rows[1:]):
+        return None, 0
+    right = max(f.r for ln in block[:used] for f in ln.frags)
+    xs = [x - 1 for x in starts] + [right + 1]
+    ys = [tops[0] + 1] + [(b + t) / 2 for b, t in zip(_row_bottoms(rows, block[:used], starts), tops[1:])] + [bottoms[-1] - 1]
+    return Grid(xs, ys, [[_clean_cell(c) for c in r] for r in rows]), used
+
+
+def _row_bottoms(rows, lines: list[Line], starts: list[float]) -> list[float]:
+    """The bottom of each row but the last: the lowest line before the next row starts."""
+    out, current = [], None
+    for ln in lines:
+        first = any(f.l <= starts[0] + 4 for f in ln.frags)
+        if first and current is not None:
+            out.append(current)
+        current = ln.b if first or current is None else min(current, ln.b)
+    return out[:len(rows) - 1]
+
+
+def _clean_cell(text: str) -> str:
+    for mark in _SOFT_HYPHENS:
+        text = text.replace(mark, "-")
+    return " ".join(text.split())
 
 
 def _columns_in(ln: Line) -> bool:
@@ -737,6 +853,7 @@ class Item:
     marker: str = ""
     left: float = 0.0        # code: its left margin; list item: where its text starts
     x0: float = 0.0          # code: where the pen starts its first line
+    pitch: float = 0.0       # code: the width of one character, for lines too short to measure it ("}")
     grid: Grid | None = None
     pages: list[int] = field(default_factory=list)
 
@@ -936,7 +1053,8 @@ def read_page(scan: PageScan, book: Book, heading_state: list[int]) -> list[Item
             if kind == "list_item" and marker and not _separate_marker(ln):
                 start = ln.l + (len(marker) + 1) * ln.frags[0].char_width   # "– Text": where the text starts
             items.append(Item(kind, text, scan.number, (ln.l, ln.b, ln.r, ln.t), level=level, marker=marker,
-                              left=start, x0=min(ln.frags, key=lambda f: f.l).x0))
+                              left=start, x0=min(ln.frags, key=lambda f: f.l).x0,
+                              pitch=next((f.pitch for f in ln.frags if f.pitch > 0), 0.0)))
         prev = ln
     for g in pending_tables:
         items.append(Item("table", "", scan.number, g.box, grid=g))
@@ -957,6 +1075,9 @@ def _margin_notes(lines: list[Line], shape: dict, body: float) -> tuple[list[Lin
     kept, notes = [], []
     for ln in lines:
         left = shape[ln.col][0]
+        if ln.r < left - body and re.search(r"[A-Za-z]{3}", ln.text) and not ln.mono:
+            notes.append(ln)                       # a line wholly in the margin, between two lines of a paragraph
+            continue
         k = next((i for i, f in enumerate(ln.frags) if f.l >= left - 2), 0)
         head = ln.frags[:k]
         if (head and head[-1].r < left - body and ln.frags[k].l - head[-1].r > body
@@ -993,8 +1114,10 @@ def _indent(ln: Line, block: Item) -> str:
     letters' drawn shapes, which change with the font the computer substitutes (Courier New on Windows)."""
     first = min(ln.frags, key=lambda f: f.l)
     pitches = sorted(f.pitch for f in ln.frags if f.pitch > 0)
-    if pitches and block.x0 and first.x0:
-        return " " * max(0, round((first.x0 - block.x0) / pitches[len(pitches) // 2]))
+    pitch = pitches[len(pitches) // 2] if pitches else block.pitch
+    if pitch > 0 and block.x0 and first.x0:
+        block.pitch = block.pitch or pitch
+        return " " * max(0, round((first.x0 - block.x0) / pitch))
     width = max(f.char_width for f in ln.frags if len(f.text) >= 3) if any(len(f.text) >= 3 for f in ln.frags) \
         else ln.frags[0].char_width
     return " " * max(0, round((ln.l - block.left) / width)) if width > 0 else ""
@@ -1284,6 +1407,7 @@ def convert_pdf(path: Path, converter: Callable, saved_part: Callable[[str], Pat
                     tmp.replace(saved)            # all or nothing, and two workers never share a temporary file
             complete = complete and done
             _split_far_merges(part, batch)
+            _refill_text(part, batch, scans)
             for local, page in enumerate(batch, 1):
                 if local not in part.pages:       # a page Docling skipped still counts as a page
                     scan = scans[page - 1]
@@ -1380,6 +1504,96 @@ def _convert_side_by_side(path: Path, batches: list[list[int]], workers: int,
     except Exception:
         logger.exception("%s: Docling processes stopped; reading the remaining batches one by one", path.name)
     return out
+
+
+_LEADING_MARKER = re.compile(r"^\s*(?:[" + re.escape(_BULLETS) + r"]|\(?\d{1,3}[.)]|\(?[a-z][.)])\s+")
+
+
+def _letters(text: str) -> str:
+    return re.sub(r"\W", "", text).lower()
+
+
+def _same_words(docling: str, ours: str) -> bool:
+    """Do two readings hold the same words? Spaces and punctuation aside, nearly every letter of Docling's
+    must be in ours, in order, and ours must not be much longer (a box that caught its neighbour's text)."""
+    from difflib import SequenceMatcher
+
+    a, b = _letters(docling), _letters(ours)
+    if not a or not b or len(b) > 1.08 * len(a) + 3:
+        return False
+    matched = sum(m.size for m in SequenceMatcher(None, a, b, autojunk=False).get_matching_blocks())
+    return matched >= 0.95 * len(a)
+
+
+def _text_in(scan: PageScan, l: float, b: float, r: float, t: float) -> str:
+    """The PDF's own words inside a box (page coordinates), line by line, as the fast reader joins them."""
+    out = ""
+    for ln in scan.lines:
+        inside = [f for f in ln.frags if l - 1 <= (f.l + f.r) / 2 <= r + 1 and b - 1 <= (f.b + f.t) / 2 <= t + 1]
+        if inside:
+            text = Line(inside).text.strip()
+            out = _join_lines(out, text).replace("\n", " ") if out else text
+    for mark in _SOFT_HYPHENS:
+        out = out.replace(mark, "-")
+    return out
+
+
+def _refill_text(part: DoclingDocument, batch: list[int], scans: list[PageScan]) -> None:
+    """Docling finds the regions (a paragraph, a caption, a table cell, a figure); the words in them are taken
+    from the PDF itself, as on fast pages. That mends words Docling splits where the font changes
+    ("vector s"), numbers it glues to the next word, and labels it misses inside a figure. A region whose
+    PDF words don't match Docling's (a box in the wrong place) keeps Docling's text."""
+    from docling_core.types.doc import (DocItemLabel, ListItem, PictureItem, ProvenanceItem, TableItem,
+                                        TextItem)
+
+    skip = {DocItemLabel.CODE, DocItemLabel.FORMULA, DocItemLabel.PAGE_HEADER, DocItemLabel.PAGE_FOOTER}
+
+    def box(bbox, local: int, scan: PageScan):
+        height = part.pages[local].size.height if local in part.pages else scan.height
+        bb = bbox.to_bottom_left_origin(page_height=height)
+        return bb.l + scan.x0, bb.b + scan.y0, bb.r + scan.x0, bb.t + scan.y0
+
+    for item, _ in list(part.iterate_items(traverse_pictures=True)):
+        provs = getattr(item, "prov", None) or []
+        if not provs or not 0 < provs[0].page_no <= len(batch):
+            continue
+        local = provs[0].page_no
+        scan = scans[batch[local - 1] - 1]
+        if scan.reason.startswith(("rotated", "Urdu")):
+            continue                                  # sideways or right-to-left lines: Docling reads those better
+        if isinstance(item, TextItem) and item.label not in skip and len(provs) == 1:
+            ours = _text_in(scan, *box(provs[0].bbox, local, scan))
+            if isinstance(item, ListItem):
+                marker = (item.marker or "").strip()
+                ours = ours[len(marker):].lstrip() if marker and ours.startswith(marker) else \
+                    _LEADING_MARKER.sub("", ours, count=1)
+            if ours and ours != item.text and _same_words(item.text, ours):
+                item.text = item.orig = ours
+        elif isinstance(item, TableItem):
+            for cell in item.data.table_cells:
+                if cell.bbox is None or not cell.text.strip():
+                    continue
+                ours = _text_in(scan, *box(cell.bbox, local, scan))
+                if ours and ours != cell.text and _same_words(cell.text, ours):
+                    cell.text = ours
+        elif isinstance(item, PictureItem):           # labels Docling left out of a figure
+            l, b, r, t = box(provs[0].bbox, local, scan)
+            have = set()
+            for ref in item.children:
+                child = ref.resolve(part)
+                have.update(_letters(w) for w in re.findall(r"\w+", getattr(child, "text", "") or ""))
+            new = []                                  # the figure's lines whose words Docling has not got
+            for ln in scan.lines:
+                if l - 1 <= (ln.l + ln.r) / 2 <= r + 1 and b - 1 <= (ln.b + ln.t) / 2 <= t + 1:
+                    tokens = re.findall(r"\w+", ln.text)
+                    words = [w for w in tokens if len(w) > 1]
+                    if (words and len(words) >= 0.5 * len(tokens)       # not letters scattered one by one
+                            and sum(_letters(w) not in have for w in words) >= 0.5 * len(words)):
+                        new.append(ln.text.strip())
+            if new:
+                text = " ".join(new)
+                part.add_text(label=DocItemLabel.TEXT, text=text, parent=item,
+                              prov=ProvenanceItem(page_no=local, bbox=provs[0].bbox, charspan=(0, len(text))))
 
 
 def _split_far_merges(part: DoclingDocument, batch: list[int]) -> None:

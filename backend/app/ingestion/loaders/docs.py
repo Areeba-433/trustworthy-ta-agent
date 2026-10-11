@@ -174,6 +174,27 @@ def _inside_table(item, document: DoclingDocument) -> bool:
     return item.label.value not in ("caption", "footnote") and _inside(item, document, TableItem)
 
 
+def _table_markdown(item) -> str:
+    """A table as Markdown, with a cell that spans several rows or columns written once, in its first
+    position (Docling's own writer repeats it in every column it covers: "ASCII | ASCII | ASCII")."""
+    data = getattr(item, "data", None)
+    if data is None or not data.num_rows or not data.num_cols:
+        return ""
+    if not any(cell.end_row_offset_idx - cell.start_row_offset_idx > 1 or
+               cell.end_col_offset_idx - cell.start_col_offset_idx > 1 for cell in data.table_cells):
+        return ""                                 # no cell spans others: Docling's own writer is right
+    grid = [["" for _ in range(data.num_cols)] for _ in range(data.num_rows)]
+    for cell in data.table_cells:
+        r, c = cell.start_row_offset_idx, cell.start_col_offset_idx
+        if 0 <= r < data.num_rows and 0 <= c < data.num_cols:
+            grid[r][c] = " ".join(cell.text.split()).replace("|", "\\|")
+    if not any(any(row) for row in grid):
+        return ""
+    lines = ["| " + " | ".join(grid[0]) + " |", "| " + " | ".join("---" for _ in grid[0]) + " |"]
+    lines += ["| " + " | ".join(row) + " |" for row in grid[1:]]
+    return "\n".join(lines)
+
+
 def walk(document: DoclingDocument, source_type: str, title: str) -> list[dict]:
     """Docling's items in reading order -> raw blocks (text not cleaned yet), each with its heading path."""
     from docling_core.types.doc import ContentLayer, PictureItem
@@ -203,7 +224,7 @@ def walk(document: DoclingDocument, source_type: str, title: str) -> list[dict]:
                 # checks the whole document: a 1,200-page book with 400 tables took almost 2 minutes that way.
                 from docling_core.transforms.serializer.markdown import MarkdownDocSerializer
                 tables = MarkdownDocSerializer(doc=document)
-            text = tables.serialize(item=item).text
+            text = _table_markdown(item) or tables.serialize(item=item).text
         else:
             text = item.text
         if not text.strip():

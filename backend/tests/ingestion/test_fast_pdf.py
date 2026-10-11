@@ -23,7 +23,7 @@ from app.ingestion.loaders import docs, fast_pdf  # noqa: E402
 
 BOOK = Path(__file__).parent / "samples" / "fast_pdf" / "textbook.pdf"
 EXPECTED = json.loads(BOOK.with_suffix(".expected.json").read_text(encoding="utf-8"))
-DRAWING_PAGES = {4, 9, 14, 15, 19, 23, 24}     # a drawing with labels, or a table with only horizontal rules
+DRAWING_PAGES = {4, 9, 15, 19, 24}     # a drawing with labels (a table with only horizontal rules is read here)
 
 
 def norm(text: str) -> str:
@@ -128,7 +128,7 @@ def test_docling_reads_only_its_pages_in_batches_and_each_batch_is_saved(tmp_pat
     monkeypatch.setattr(fast_pdf, "BATCH_PAGES", 2)
     blocks, complete, report, stand_in = read_book(tmp_path)
     assert complete and report["docling_pages"] == len(DRAWING_PAGES)
-    assert stand_in.calls == [2, 2, 2, 1]            # 7 pages, 2 at a time, never the whole book
+    assert stand_in.calls == [2, 2, 1]               # 5 pages, 2 at a time, never the whole book
     pages = [b.loc.page for b in blocks]
     covered = {p for b in blocks for p in [b.loc.page] + b.extra.get("pages", [])}
     assert pages == sorted(pages) and covered == set(range(1, 26))
@@ -155,7 +155,7 @@ def test_if_the_processes_fail_the_batches_are_read_one_by_one(tmp_path, monkeyp
     stand_in = StandIn()
     doc, complete, report = fast_pdf.convert_pdf(BOOK, lambda: stand_in, lambda key: tmp_path / f"{key}.json",
                                                  workers=2, converter_name="no_such_module:nothing")
-    assert complete and report["docling_workers"] == 1 and stand_in.calls == [2, 2, 2, 1]
+    assert complete and report["docling_workers"] == 1 and stand_in.calls == [2, 2, 1]
 
 
 def test_a_failed_batch_marks_the_book_incomplete_and_is_not_saved(tmp_path):
