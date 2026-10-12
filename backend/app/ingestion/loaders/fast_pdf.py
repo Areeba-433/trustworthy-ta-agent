@@ -30,9 +30,11 @@ from typing import TYPE_CHECKING, Callable
 if TYPE_CHECKING:
     from docling_core.types.doc import DoclingDocument
 
+from app.ingestion.loaders import pdf_math
+
 logger = logging.getLogger("tta.ingestion.fast_pdf")
 
-VERSION = 11                      # raise it whenever the fast path's output changes, so saved results are redone
+VERSION = 12                      # raise it whenever the fast path's output changes, so saved results are redone
 BATCH_PAGES = 50                 # pages per Docling run: each finished batch is saved, so a crash loses at most one
 ROUTE_ALL_ABOVE = 0.7            # when more than this share of pages needs Docling, Docling reads the whole file
 MIN_PAGES = 20                   # shorter files go straight to Docling; the fast path only pays off on long ones
@@ -85,6 +87,8 @@ class Frag:
 class Line:
     frags: list[Frag]
     col: int = -1            # on a two-column page: 0 left, 1 right; -1 runs across the page
+    formula: str = ""        # a formula set on its own lines, rebuilt as LaTeX (see pdf_math.py)
+    source: str = ""         # ... and its lines as the PDF reads them
 
     @property
     def l(self): return min(f.l for f in self.frags)
@@ -146,6 +150,7 @@ class PageScan:
     reason: str = ""
     y0: float = 0.0          # bottom of the visible page (its crop box), as text positions count from there
     x0: float = 0.0          # left of the visible page: Docling measures its boxes from this corner
+    formulas: list = field(default_factory=list)    # (box, LaTeX, the PDF's text) of each formula rebuilt
 
     def low(self, ln: Line) -> bool:
         return ln.b - self.y0 < 0.12 * self.height
@@ -230,12 +235,13 @@ def _segments(obj) -> list[tuple[float, float, float, float]]:
     return out
 
 
-def _runs(textpage) -> tuple[list[Frag], list[tuple[str, float, float, float, float]], bool]:
+def _runs(textpage, symbol: Callable | None = None) -> tuple[list[Frag], list[tuple[str, float, float, float, float]], bool]:
     """pdfium's characters, in its own order, cut into runs: one text object, one baseline, no wide gap.
 
     Reading characters one by one (not text boxes) means a letter that pokes into the next box is never
     read twice, and pdfium's own spaces decide where words break. Returns the runs, every character with
-    its box (for table cells), and whether any text is turned (upright or slanted).
+    its box (for table cells), and whether any text is turned (upright or slanted). symbol(index, code, box)
+    names a symbol the font gives no Unicode for (a math font's "=" read as \\x02), see pdf_math.py.
     """
     import pypdfium2.raw as pdfium_c
 
@@ -258,11 +264,18 @@ def _runs(textpage) -> tuple[list[Frag], list[tuple[str, float, float, float, fl
             if 0xDC00 <= low <= 0xDFFF:          # a letter beyond U+FFFF (math italics, emoji) comes in two halves
                 code, pair = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00), i + 1
         ch = chr(code) if code and not 0xD800 <= code <= 0xDFFF else ""
-        if ch in ("\r", "\n", ""):
+        # a code below 32 that pdfium did not put there itself is a font's symbol number: a math font gives
+        # "=" as 2 and "(" even as 10, which is otherwise a line break
+        numbered = 0 < code < 0x20 and not (code in (10, 13) and pdfium_c.FPDFText_IsGenerated(raw, i)) \
+            and not pdfium_c.FPDFText_IsHyphen(raw, i)
+        if ch in ("\r", "\n", "") and not numbered:
             cur = None                            # pdfium's line break
             continue
         pdfium_c.FPDFText_GetCharBox(raw, i, ctypes.byref(l), ctypes.byref(r), ctypes.byref(b), ctypes.byref(t))
         box = (l.value, b.value, r.value, t.value)
+        if numbered and symbol is not None:
+            # named by its shape (see pdf_math.py); one not recognised is shown as "�", not dropped as a space
+            ch = symbol(i, code, box) or "\ufffd"
         chars.append((ch, *box))
         if ch.isspace():
             if cur is not None:
@@ -358,7 +371,14 @@ def scan_page(pdf, index: int) -> PageScan:
     x0, y0, x1, y1 = page.get_cropbox()
     width, height = abs(x1 - x0) or 1.0, abs(y1 - y0) or 1.0
     textpage = page.get_textpage()
-    frags, chars, turned = _runs(textpage)
+    symbols = pdf.__dict__.setdefault("_tta_symbols", pdf_math.Symbols())      # one per document
+    crop, media = page.get_cropbox(), page.get_mediabox()
+    origin = (max(crop[0], media[0]), min(crop[3], media[3]))                   # the visible page's top left
+
+    def symbol(i: int, code: int, box) -> str:
+        return symbols(page, textpage.raw, i, code, box, origin)
+
+    frags, chars, turned = _runs(textpage, symbol)
     rotated = turned
     upright = [f for f in frags if len(f.text) > 2 and f.t - f.b > 2 * (f.r - f.l)]
     if upright:
@@ -407,7 +427,8 @@ def scan_page(pdf, index: int) -> PageScan:
     gutter = _gutter(lines, x0, width)
     if gutter:
         lines = _column_lines(frags, gutter)
-    scan = PageScan(index + 1, width, height, lines, [], pictures, y0=min(y0, y1), x0=min(x0, x1))
+    lines, h_lines, formulas = _formulas(lines, textpage.raw, h_lines, width, symbol)
+    scan = PageScan(index + 1, width, height, lines, [], pictures, y0=min(y0, y1), x0=min(x0, x1), formulas=formulas)
     if len(shaded) >= 3:
         drawn += shaded                           # many filled boxes: striped table rows or a bar chart
     _route(scan, h_lines, v_lines, drawn, rotated or page.get_rotation() != 0)
@@ -575,6 +596,100 @@ def _column_lines(frags: list[Frag], gutter: float) -> list[Line]:
     if len(placed) != len(frags) or sum(len(ln.frags) for ln in out) != len(frags):
         return _group_lines(frags)                # never lose a run: read the page as one column instead
     return out
+
+
+def _formulas(lines: list[Line], textpage, h_lines, width: float, symbol: Callable):
+    """Formulas set on their own lines -> one line each, holding the formula rebuilt as LaTeX.
+
+    A formula line has math in it (a math font, or symbols like Σ ≤ √), hardly any words of running text,
+    and stands apart: indented or centred, or numbered at the right ("(3.1)"). The lines around it that
+    hold only its pieces (the "n" under a fraction bar, the "i=1" under a sum) join it. Returns the lines,
+    the drawn rules left (fraction bars are not table rules), and (box, LaTeX, the PDF's text) per formula.
+    """
+    plain = [ln for ln in lines if not ln.mono]
+    if not any(pdf_math.is_math(f.text, f.font) for ln in plain for f in ln.frags):
+        return lines, h_lines, []
+    sizes: Counter = Counter()
+    for ln in plain:
+        sizes[round(ln.size)] += len(ln.text)
+    body = float(sizes.most_common(1)[0][0])
+    usual = [ln for ln in plain if abs(ln.size - body) < 1.5] or plain
+    left = Counter(round(ln.l) for ln in usual).most_common(1)[0][0]
+    right = max(ln.r for ln in usual)
+
+    def mathy(ln: Line) -> bool:
+        return any(pdf_math.is_math(f.text, f.font) for f in ln.frags)
+
+    def numbered(ln: Line) -> bool:
+        last = ln.frags[-1]
+        return (len(ln.frags) > 1 and bool(pdf_math.EQUATION_NUMBER.match(last.text.strip()))
+                and last.l - ln.frags[-2].r > 2 * body)
+
+    def display(ln: Line) -> bool:
+        if ln.mono or not mathy(ln) or pdf_math.prose_words(ln.frags) > 2 or re.search(r"(\s*,\s*\d+){2,}\s*$", ln.text):
+            return False                              # (an index entry: "negation operator (=), 62, 91, 92")
+        return numbered(ln) or (ln.l >= left + 2 * body and ln.r <= right - body)
+
+    def piece(ln: Line) -> bool:
+        return (not ln.mono and pdf_math.prose_words(ln.frags) == 0
+                and (mathy(ln) or ln.size < 0.9 * body or len(ln.text.strip()) <= 12))
+
+    def on_bar(ln: Line, box) -> bool:
+        """Right above or below the fraction bars in the formula: numerators or denominators, words or not."""
+        bars = [(a0, a1, y) for a0, a1, y in h_lines if a0 < box[2] and a1 > box[0]
+                and (0 <= ln.b - y < 0.8 * body or 0 <= y - ln.t < 0.8 * body)]
+        return not ln.mono and bool(bars) and all(any(a0 - 2 <= f.l and f.r <= a1 + 2 for a0, a1, _ in bars)
+                                                  for f in ln.frags)
+
+    groups: list[list[Line]] = []
+    taken: set[int] = set()
+    for seed in [ln for ln in plain if display(ln)]:
+        if id(seed) in taken:
+            continue
+        group, box = [seed], [seed.l, seed.b, seed.r, seed.t]
+        taken.add(id(seed))
+        grew = True
+        while grew:
+            grew = False
+            for ln in plain:
+                if id(ln) in taken or ln.col != seed.col or not (piece(ln) or display(ln) or on_bar(ln, box)):
+                    continue
+                gap = max(ln.b - box[3], box[1] - ln.t)          # below 0 when they overlap
+                if gap > 0.8 * body or ln.r < box[0] - body or ln.l > box[2] + body:
+                    continue
+                if gap > 0 and numbered(ln) and any(numbered(g) for g in group):
+                    continue                                    # two numbered equations stay two
+                group.append(ln)
+                taken.add(id(ln))
+                box = [min(box[0], ln.l), min(box[1], ln.b), max(box[2], ln.r), max(box[3], ln.t)]
+                grew = True
+        groups.append(group)
+
+    found, used_bars = [], set()
+    replace: dict[int, Line | None] = {}
+    for group in groups:
+        l, b = min(ln.l for ln in group), min(ln.b for ln in group)
+        r, t = max(ln.r for ln in group), max(ln.t for ln in group)
+        bars = [k for k, (a0, a1, y) in enumerate(h_lines)
+                if l - 3 <= a0 and a1 <= r + 3 and b - 2 <= y <= t + 2 and a1 - a0 < 0.8 * width]
+        glyphs = pdf_math.glyphs_of(textpage, [(f.i0, f.i1) for ln in group for f in ln.frags if f.i0 >= 0], symbol)
+        latex = pdf_math.to_latex(glyphs, [pdf_math.Bar(*h_lines[k]) for k in bars])
+        if not latex:
+            continue                                            # left as the PDF reads it
+        group.sort(key=lambda ln: -ln.t)
+        source = "\n".join(ln.text.strip() for ln in group)
+        main = max(group, key=lambda ln: len(ln.text))
+        frag = Frag(latex, l, b, r, t, main.size, False, False, False, min(f.i0 for ln in group for f in ln.frags),
+                    max(f.i1 for ln in group for f in ln.frags), font="formula", base=main.frags[0].base)
+        replace[id(group[0])] = Line([frag], group[0].col, formula=latex, source=source)
+        for ln in group[1:]:
+            replace[id(ln)] = None
+        used_bars.update(bars)
+        found.append(((l, b, r, t), latex, source))
+    if not found:
+        return lines, h_lines, []
+    out = [replace.get(id(ln), ln) for ln in lines]
+    return [ln for ln in out if ln is not None], [h for k, h in enumerate(h_lines) if k not in used_bars], found
 
 
 def _cluster(values: list[float], tolerance: float) -> list[float]:
@@ -856,6 +971,7 @@ class Item:
     pitch: float = 0.0       # code: the width of one character, for lines too short to measure it ("}")
     grid: Grid | None = None
     pages: list[int] = field(default_factory=list)
+    source: str = ""         # formula: its lines as the PDF reads them (text holds it as LaTeX)
 
 
 def _norm(text: str) -> str:
@@ -1054,7 +1170,7 @@ def read_page(scan: PageScan, book: Book, heading_state: list[int]) -> list[Item
                 start = ln.l + (len(marker) + 1) * ln.frags[0].char_width   # "– Text": where the text starts
             items.append(Item(kind, text, scan.number, (ln.l, ln.b, ln.r, ln.t), level=level, marker=marker,
                               left=start, x0=min(ln.frags, key=lambda f: f.l).x0,
-                              pitch=next((f.pitch for f in ln.frags if f.pitch > 0), 0.0)))
+                              pitch=next((f.pitch for f in ln.frags if f.pitch > 0), 0.0), source=ln.source))
         prev = ln
     for g in pending_tables:
         items.append(Item("table", "", scan.number, g.box, grid=g))
@@ -1128,6 +1244,8 @@ _LABEL = re.compile(r"^[A-Z][A-Z ]{2,15}:\s+\S")      # "CONCEPT: All computers.
 
 def _classify(ln: Line, text: str, scan: PageScan, book: Book, left: float, state: list[int]):
     body = book.body
+    if ln.formula:
+        return "formula", 0, ""
     if scan.number <= 2 and ln.size >= 1.6 * body and len(text) < 150 and not state[1]:
         state[1] = 1
         return "title", 0, ""
@@ -1185,7 +1303,7 @@ def _continues(last: Item, kind: str, ln: Line, prev: Line, left, right, body, g
     """Does this line carry on the item above it?"""
     if last.kind == "code":
         return kind == "code"
-    if kind in ("code", "title", "list_item", "table") or last.kind in ("title", "table"):
+    if kind in ("code", "title", "list_item", "table", "formula") or last.kind in ("title", "table", "formula"):
         return False
     if last.kind == "heading":
         return kind == "heading" and abs(ln.size - prev.size) < 0.6 and space < 0.8 * ln.size
@@ -1247,6 +1365,8 @@ def _to_document(name: str, scans: list[PageScan], items_by_page: dict[int, list
                 node = doc.add_list_item(text=item.text, enumerated=ordered, marker=item.marker, parent=group, prov=p[0])
             elif item.kind == "code":
                 node = doc.add_code(text=item.text, prov=p[0])
+            elif item.kind == "formula":
+                node = doc.add_text(label=DocItemLabel.FORMULA, text=item.text, orig=item.source or item.text, prov=p[0])
             elif item.kind == "table":
                 g = item.grid
                 cells = [TableCell(text=value, start_row_offset_idx=r, end_row_offset_idx=r + 1,
@@ -1531,7 +1651,7 @@ def _text_in(scan: PageScan, l: float, b: float, r: float, t: float) -> str:
     for ln in scan.lines:
         inside = [f for f in ln.frags if l - 1 <= (f.l + f.r) / 2 <= r + 1 and b - 1 <= (f.b + f.t) / 2 <= t + 1]
         if inside:
-            text = Line(inside).text.strip()
+            text = ln.source.replace("\n", " ") if ln.formula else Line(inside).text.strip()
             out = _join_lines(out, text).replace("\n", " ") if out else text
     for mark in _SOFT_HYPHENS:
         out = out.replace(mark, "-")
@@ -1561,7 +1681,14 @@ def _refill_text(part: DoclingDocument, batch: list[int], scans: list[PageScan])
         scan = scans[batch[local - 1] - 1]
         if scan.reason.startswith(("rotated", "Urdu")):
             continue                                  # sideways or right-to-left lines: Docling reads those better
-        if isinstance(item, TextItem) and item.label not in skip and len(provs) == 1:
+        if isinstance(item, TextItem) and item.label == DocItemLabel.FORMULA and len(provs) == 1:
+            l, b, r, t = box(provs[0].bbox, local, scan)
+            for (fl, fb, fr, ft), latex, source in scan.formulas:   # the same formula, rebuilt from the PDF
+                overlap = max(0.0, min(r, fr) - max(l, fl)) * max(0.0, min(t, ft) - max(b, fb))
+                if overlap > 0.5 * min((r - l) * (t - b), (fr - fl) * (ft - fb)):
+                    item.text, item.orig = latex, source
+                    break
+        elif isinstance(item, TextItem) and item.label not in skip and len(provs) == 1:
             ours = _text_in(scan, *box(provs[0].bbox, local, scan))
             if isinstance(item, ListItem):
                 marker = (item.marker or "").strip()

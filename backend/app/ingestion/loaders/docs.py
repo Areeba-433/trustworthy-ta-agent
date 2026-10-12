@@ -111,7 +111,9 @@ def convert(path: Path, meta: ResourceMeta) -> tuple[DoclingDocument | None, boo
         document = None
         if fast:                            # long digital PDFs: plain pages read directly, Docling for the rest
             def batch_file(key: str) -> Path:
-                return cache_path(meta.file_sha256, PARSER, docling_version(), f"{variant}-part-{key}")
+                # a batch is Docling's own reading of those pages: it does not change with the fast path's
+                # version, so it keeps the name it was first saved under and is not read again after an update
+                return cache_path(meta.file_sha256, PARSER, docling_version(), f"{CACHE_VARIANT}-fast-pdf-11-part-{key}")
 
             try:
                 document, complete, report = fast_pdf.convert_pdf(
@@ -304,6 +306,11 @@ def walk(document: DoclingDocument, source_type: str, title: str) -> list[dict]:
                 headings = [h for h in headings if h[0] < level] + [(level, name)]
         context = [slide_title or f"Slide {unit}"] if source_type == "pptx" else []
         extra = {"ref": item.self_ref}
+        if item.label.value == "formula":
+            extra["formula"] = True             # text: LaTeX when the fast path rebuilt it (see pdf_math.py) ...
+            orig = getattr(item, "orig", "") or ""
+            if orig and orig != item.text:
+                extra["pdf_text"] = orig        # ... and the formula's lines as the PDF reads them
         if in_picture:
             extra["in_picture"] = True      # a label inside a figure, not running text
         pages = sorted({p.page_no for p in item.prov}) if getattr(item, "prov", None) else []
