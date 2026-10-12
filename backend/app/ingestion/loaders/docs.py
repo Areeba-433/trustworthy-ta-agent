@@ -13,7 +13,7 @@ import os
 import re
 import shutil
 import uuid
-from collections import defaultdict
+from collections import Counter, defaultdict
 from functools import lru_cache
 from importlib.metadata import version
 from pathlib import Path
@@ -255,6 +255,42 @@ def _table_markdown(item) -> str:
     return "\n".join(lines)
 
 
+def _read_twice(document: DoclingDocument) -> set[str]:
+    """Items Docling read twice: a table, and the same words again as text or code over the same place (a
+    notebook's output table inside its code cell, the lines of a picture laid over a table). Of the two,
+    the one whose words the other holds in full is left out, so nothing is lost and nothing comes twice."""
+    from docling_core.types.doc import ContentLayer, TableItem
+
+    def words(text: str) -> Counter:
+        return Counter(w.lower() for w in re.findall(r"\w+", text))
+
+    def held(a: Counter, b: Counter) -> bool:         # every word of a is in b: leaving a out loses nothing
+        return sum(a.values()) > 0 and not (a - b)
+
+    tables, others = defaultdict(list), defaultdict(list)
+    for item, _ in document.iterate_items(included_content_layers={ContentLayer.BODY}, traverse_pictures=True):
+        prov = getattr(item, "prov", None)
+        if not prov or len(prov) != 1 or prov[0].page_no not in document.pages:
+            continue
+        box = prov[0].bbox.to_bottom_left_origin(document.pages[prov[0].page_no].size.height)
+        if isinstance(item, TableItem):
+            text = " ".join(cell.text for cell in item.data.table_cells) if item.data else ""
+            tables[prov[0].page_no].append((item.self_ref, box, words(text)))
+        elif getattr(item, "text", "") and item.label.value not in ("caption", "footnote", "section_header", "title"):
+            others[prov[0].page_no].append((item.self_ref, box, words(item.text)))
+    out: set[str] = set()
+    for page, found in tables.items():
+        for t_ref, t_box, t_words in found:
+            for o_ref, o_box, o_words in others.get(page, []):
+                inside = t_box.l <= (o_box.l + o_box.r) / 2 <= t_box.r and t_box.b <= (o_box.b + o_box.t) / 2 <= t_box.t
+                around = o_box.l <= (t_box.l + t_box.r) / 2 <= o_box.r and o_box.b <= (t_box.b + t_box.t) / 2 <= o_box.t
+                if inside and held(o_words, t_words):
+                    out.add(o_ref)                    # a line of the table again: the table has it
+                elif around and held(t_words, o_words):
+                    out.add(t_ref)                    # the table again, inside a code cell that has it all
+    return out
+
+
 def walk(document: DoclingDocument, source_type: str, title: str) -> list[dict]:
     """Docling's items in reading order -> raw blocks (text not cleaned yet), each with its heading path."""
     from docling_core.types.doc import ContentLayer, PictureItem
@@ -267,6 +303,7 @@ def walk(document: DoclingDocument, source_type: str, title: str) -> list[dict]:
     tables = None                           # Markdown writer for tables, made once (see below)
     levels = _heading_levels(document, source_type)
     parts = _parts(document)
+    twice = _read_twice(document) if source_type == "pdf" else set()
     # traverse_pictures: the words inside a diagram (labels, boxes, a UML class) are text of the book too
     for item, _ in document.iterate_items(included_content_layers={ContentLayer.BODY, ContentLayer.NOTES, ContentLayer.FURNITURE},
                                           traverse_pictures=True):
@@ -275,7 +312,7 @@ def walk(document: DoclingDocument, source_type: str, title: str) -> list[dict]:
             headings, slide_title = [], None        # a new slide starts with no headings
         unit = page
         kind = _kind(item, document)
-        if kind is None or (kind != "table" and _inside_table(item, document)):
+        if kind is None or (kind != "table" and _inside_table(item, document)) or item.self_ref in twice:
             continue
         in_picture = kind != "caption" and _inside(item, document, PictureItem)
         if in_picture and kind == "heading":

@@ -360,3 +360,27 @@ def test_my_sample_files(path, data_dir):
     assert all(b.heading_path[0] == doc.title for b in doc.blocks)
     if doc.source_type == "pdf":
         assert all(1 <= b.loc.page <= doc.quality.units_total for b in doc.blocks)
+
+def test_a_region_docling_reads_twice_comes_once():
+    """A notebook's output: Docling gives the table, and its rows again as text or inside a code cell."""
+    from docling_core.types.doc import CoordOrigin
+
+    def at(l, b, r, t):
+        box = BoundingBox(l=l, t=t, r=r, b=b, coord_origin=CoordOrigin.BOTTOMLEFT)
+        return ProvenanceItem(page_no=1, bbox=box, charspan=(0, 0))
+
+    d = DoclingDocument(name="notebook")
+    d.add_page(page_no=1, size=Size(width=400, height=600))
+    cells = [TableCell(text=value, start_row_offset_idx=r, end_row_offset_idx=r + 1, start_col_offset_idx=c,
+                       end_col_offset_idx=c + 1, column_header=r == 0)
+             for r, row in enumerate([["GEO", "Value"], ["Spain", "4.26"]]) for c, value in enumerate(row)]
+    d.add_table(TableData(num_rows=2, num_cols=2, table_cells=cells), prov=at(50, 400, 300, 450))
+    d.add_text(DocItemLabel.TEXT, "Spain 4.26", prov=at(55, 405, 250, 415))                 # a row again
+    d.add_text(DocItemLabel.TEXT, "Spain 4.26 is the lowest", prov=at(55, 420, 250, 430))   # more than a row
+    d.add_code("Out[26]: GEO Value Spain 4.26", prov=at(40, 380, 320, 470))                 # the table again
+    d.add_table(TableData(num_rows=2, num_cols=2, table_cells=cells), prov=at(50, 100, 300, 150))
+    texts = [(b["kind"], b["text"]) for b in docs.walk(d, "pdf", "notebook")]
+    assert ("paragraph", "Spain 4.26") not in texts                      # the table has it
+    assert ("paragraph", "Spain 4.26 is the lowest") in texts           # it has a word the table hasn't
+    assert ("code", "Out[26]: GEO Value Spain 4.26") in texts
+    assert [k for k, _ in texts].count("table") == 1                     # the one inside the code cell is out
