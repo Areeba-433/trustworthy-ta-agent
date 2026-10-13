@@ -1,28 +1,31 @@
 """Audio department: a lecture recording becomes English transcript blocks. Owner: Zuha.
 
 Part 1: duration limits, ffprobe, light ffmpeg preprocessing, pause detection and the chunk plan.
-Parts 2 and 3 add transcription with caching, the hallucination filter and the real load().
+Part 2: settings, the faster-whisper engine, per-chunk caching and offsets.
+Part 3 (next step) adds the hallucination filter, the blocks and the real load().
 """
 from __future__ import annotations
 
 import json
 import logging
 import math
+import os
 import re
 import shutil
 import subprocess
+import threading
 import wave
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.ingestion import messages
 from app.ingestion.contract import ParsedDocument, ResourceMeta
 from app.ingestion.loaders._stub import stub_document
 from app.ingestion.registry import register
-from app.ingestion.storage import raw_dir
+from app.ingestion.storage import Timer, cache_path, raw_dir, write_text_atomic
 
 if TYPE_CHECKING:
     import numpy as np
@@ -50,6 +53,21 @@ DENOISE_FILTER = "afftdn"     # only when AUDIO_DENOISE=1
 PROBE_TIMEOUT = 60            # seconds
 CONVERT_TIMEOUT = 1800
 SILENCE_TIMEOUT = 600
+
+# ---- Speech-to-text. Settings come from .env and are read when a file is processed, not at import ----
+TASK = "translate"            # stored text is English: English passes through, Urdu is translated
+# AUDIO_KEEP_ORIGINAL (not implemented): would also run task="transcribe" and keep the Urdu text in
+# `extra`. It needs a team decision first, because rule 4 of the guide is about the original text.
+DEFAULT_MODEL = "medium"
+DEFAULT_LANGUAGE = "ur"       # Step 1: auto-detect called Urdu "hi"; forcing "ur" keeps every chunk consistent
+DEFAULT_BEAM_SIZE = 5
+CPU_THREADS = 8
+VAD_MIN_SILENCE_MS = 500
+# No initial_prompt: in the Step 1 benchmark a prompt made the output worse and about 4x slower.
+REFUSED_MODELS = {"tiny", "base", "small", "turbo", "large-v3-turbo"}   # too weak, or not trained to translate
+DEFAULT_MODEL_DIR = Path(__file__).resolve().parents[3] / "data" / "models" / "whisper"  # backend/data is gitignored
+CACHE_VERSION = "v1"          # bump when the cached JSON layout changes, so old files are ignored
+REQUIRED_SEGMENT_KEYS = {"start", "end", "text", "avg_logprob", "no_speech_prob", "compression_ratio"}
 
 # ---- Teacher messages, all from messages.py ----
 # Until Minahil adds the audio-specific sentences, the closest existing one is used.
@@ -81,7 +99,33 @@ class Chunk:
         return self.end - self.start
 
 
-# ---------------------------------------------------------------- ffmpeg / ffprobe
+@dataclass(frozen=True)
+class Plan:
+    seconds: float              # length of the prepared WAV, which matches the original
+    chunks: tuple[Chunk, ...]
+
+
+@dataclass(frozen=True)
+class AudioSettings:
+    model: str
+    language: str | None        # None = auto-detect
+    beam_size: int
+    denoise: bool
+    model_dir: Path
+    task: str = TASK
+
+
+@dataclass
+class RecordingTranscript:
+    seconds: float
+    chunks: list[Chunk]
+    segments: list[dict]        # every chunk, in order, on the ORIGINAL timeline; not filtered yet
+    transcribed: int = 0        # chunks sent to the model in this run
+    from_cache: int = 0         # chunks read from the cache
+    failed_chunks: list[int] = field(default_factory=list)
+
+
+# ================================================================ part 1: ffmpeg / ffprobe
 
 def _tool(name: str) -> str:
     found = shutil.which(name)
@@ -158,7 +202,7 @@ def convert_to_wav(src: Path, dst: Path, denoise: bool = False) -> float:
     return seconds
 
 
-# ---------------------------------------------------------------- the prepared WAV
+# ================================================================ part 1: the prepared WAV
 
 @contextmanager
 def _open_prepared(wav: Path) -> Iterator[wave.Wave_read]:
@@ -194,7 +238,7 @@ def read_chunk(wav: Path, chunk: Chunk) -> np.ndarray:
     return np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
 
 
-# ---------------------------------------------------------------- pauses and chunks
+# ================================================================ part 1: pauses and chunks
 
 _SILENCE_START = re.compile(r"silence_start:\s*(-?\d+(?:\.\d+)?)")
 _SILENCE_END = re.compile(r"silence_end:\s*(-?\d+(?:\.\d+)?)")
@@ -223,14 +267,16 @@ def find_silences(wav: Path, seconds: float) -> list[tuple[float, float]]:
 
 
 def plan_chunks(seconds: float, silences: list[tuple[float, float]],
-                chunk_seconds: float = CHUNK_MINUTES * 60,
-                search_seconds: float = CUT_SEARCH_SECONDS) -> list[Chunk]:
+                chunk_seconds: float | None = None,
+                search_seconds: float | None = None) -> list[Chunk]:
     """Split the timeline into ~10-minute chunks, cutting in the middle of the pause nearest each mark.
 
     No pause within `search_seconds` of a mark: cut exactly at the mark. The chunks cover the whole
     recording with no gaps, so (time inside a chunk) + chunk.start = time in the original.
     """
-    search_seconds = min(search_seconds, chunk_seconds / 2)
+    chunk_seconds = chunk_seconds or CHUNK_MINUTES * 60
+    search_seconds = min(CUT_SEARCH_SECONDS if search_seconds is None else search_seconds,
+                         chunk_seconds / 2)
     cuts = [0.0]
     while seconds - cuts[-1] > chunk_seconds + MIN_CHUNK_SECONDS:
         target = cuts[-1] + chunk_seconds
@@ -251,7 +297,7 @@ def plan_chunks(seconds: float, silences: list[tuple[float, float]],
     return chunks
 
 
-# ---------------------------------------------------------------- temporary files
+# ================================================================ part 1: temporary files
 
 @contextmanager
 def work_dir(resource_id: str) -> Iterator[Path]:
@@ -263,6 +309,246 @@ def work_dir(resource_id: str) -> Iterator[Path]:
         yield folder
     finally:
         shutil.rmtree(folder, ignore_errors=True)
+
+
+# ================================================================ part 2: settings
+
+def _refused(model: str) -> bool:
+    name = model.lower()
+    return name in REFUSED_MODELS or name.startswith("distil") or name.endswith(".en")
+
+
+def read_settings() -> AudioSettings:
+    """Read the AUDIO_* settings from the environment (config.py has already loaded .env)."""
+    model = os.getenv("AUDIO_WHISPER_MODEL", "").strip() or DEFAULT_MODEL
+    if _refused(model):
+        logger.warning("AUDIO_WHISPER_MODEL=%s can't translate well; using %s instead", model, DEFAULT_MODEL)
+        model = DEFAULT_MODEL
+
+    language: str | None = os.getenv("AUDIO_LANGUAGE", "").strip().lower() or DEFAULT_LANGUAGE
+    if language == "auto":
+        language = None
+    elif not re.fullmatch(r"[a-z]{2,3}", language):
+        logger.warning("AUDIO_LANGUAGE=%r is not a language code; using %s", language, DEFAULT_LANGUAGE)
+        language = DEFAULT_LANGUAGE
+
+    try:
+        beam_size = int(os.getenv("AUDIO_BEAM_SIZE", "").strip() or DEFAULT_BEAM_SIZE)
+    except ValueError:
+        beam_size = 0
+    if not 1 <= beam_size <= 10:
+        logger.warning("AUDIO_BEAM_SIZE must be a number from 1 to 10; using %d", DEFAULT_BEAM_SIZE)
+        beam_size = DEFAULT_BEAM_SIZE
+
+    denoise = os.getenv("AUDIO_DENOISE", "0").strip() == "1"
+    model_dir = Path(os.getenv("AUDIO_MODEL_DIR", "").strip() or DEFAULT_MODEL_DIR)
+    return AudioSettings(model=model, language=language, beam_size=beam_size,
+                         denoise=denoise, model_dir=model_dir)
+
+
+# ================================================================ part 2: the engine
+
+_engine_lock = threading.Lock()   # one transcription at a time: the dispatcher doesn't serialise audio
+_model: Any = None                # loaded on first use, then reused (loading takes seconds and ~1-2 GB)
+_model_name: str | None = None
+
+
+def _get_model(model_name: str, model_dir: Path) -> Any:
+    """Load the Whisper model once. Call only while holding _engine_lock."""
+    global _model, _model_name
+    if _model is not None and _model_name == model_name:
+        return _model
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError as err:
+        raise AudioProblem(MSG_INTERNAL, f"faster-whisper is not installed: {err}") from None
+    try:
+        model_dir.mkdir(parents=True, exist_ok=True)
+        _model = WhisperModel(model_name, device="cpu", compute_type="int8",
+                              cpu_threads=CPU_THREADS, download_root=str(model_dir))
+    except Exception as err:      # download failure, unknown model name, out of memory
+        _model, _model_name = None, None
+        raise AudioProblem(MSG_INTERNAL, f"could not load Whisper model {model_name!r}: {err}") from None
+    _model_name = model_name
+    return _model
+
+
+def transcribe_audio(audio: np.ndarray | Path, task: str, language: str | None,
+                     initial_prompt: str | None, *, model_name: str, beam_size: int,
+                     model_dir: Path) -> dict:
+    """The ONE place that talks to the speech engine. Returns plain, JSON-ready data:
+
+        {"language": "ur", "language_probability": 1.0,
+         "segments": [{"start", "end", "text", "avg_logprob", "no_speech_prob", "compression_ratio"}]}
+
+    Times are seconds from the start of `audio`. This is the same shape as a Groq/OpenAI
+    "verbose_json" response, so a Groq backend can be added later behind this function
+    (it would write the samples to a WAV file and upload that).
+    """
+    with _engine_lock:
+        model = _get_model(model_name, model_dir)
+        segments, info = model.transcribe(
+            audio, task=task, language=language, initial_prompt=initial_prompt,
+            beam_size=beam_size, vad_filter=True,
+            vad_parameters=dict(min_silence_duration_ms=VAD_MIN_SILENCE_MS),
+            condition_on_previous_text=False)
+        segments = list(segments)          # a generator: the real work happens here, inside the lock
+    return {
+        "language": info.language,
+        "language_probability": round(float(info.language_probability), 3),
+        "segments": [{"start": round(float(s.start), 3), "end": round(float(s.end), 3),
+                      "text": s.text.strip(),
+                      "avg_logprob": round(float(s.avg_logprob), 4),
+                      "no_speech_prob": round(float(s.no_speech_prob), 4),
+                      "compression_ratio": round(float(s.compression_ratio), 4)}
+                     for s in segments],
+    }
+
+
+# ================================================================ part 2: cache
+
+def _tag(text: str) -> str:
+    """Make a setting safe inside a file name (a model setting can be a folder path)."""
+    return re.sub(r"[^A-Za-z0-9.]+", "-", text).strip("-") or "x"
+
+
+def plan_cache_path(sha: str, denoise: bool, chunk_seconds: float, search_seconds: float) -> Path:
+    variant = (f"plan-{chunk_seconds:g}-{search_seconds:g}-{SILENCE_NOISE_DB}dB-"
+               f"{SILENCE_MIN_SECONDS:g}-{'dn' if denoise else 'plain'}")
+    return cache_path(sha, "audio", CACHE_VERSION, variant)
+
+
+def chunk_cache_path(sha: str, chunk: Chunk, s: AudioSettings) -> Path:
+    """One raw-transcript file per chunk. The name holds every setting that changes the words, so a
+    translate cache is never reused for transcribe, a different model never reuses an old transcript,
+    and a different chunk plan (other start OR end) never reuses a chunk that covered other audio."""
+    variant = "_".join([
+        _tag(s.model), s.task, s.language or "auto", f"b{s.beam_size}",
+        "dn" if s.denoise else "plain", f"c{chunk.index:03d}",
+        f"{round(chunk.start * 1000)}-{round(chunk.end * 1000)}ms"])
+    return cache_path(sha, "audio", CACHE_VERSION, variant)
+
+
+def _read_json(path: Path) -> Any:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as err:
+        logger.warning("ignoring damaged cache file %s: %s", path.name, err)
+        return None
+
+
+def _write_json(path: Path, data: Any) -> None:
+    """Save all-or-nothing with storage.py. A failed save only costs time later, so it never stops the work."""
+    try:
+        write_text_atomic(path, json.dumps(data, ensure_ascii=False))
+    except OSError as err:
+        logger.warning("could not save cache file %s: %s", path.name, err)
+
+
+def _load_plan(path: Path) -> Plan | None:
+    data = _read_json(path)
+    if data is None:
+        return None
+    try:
+        plan = Plan(seconds=float(data["seconds"]), chunks=tuple(Chunk(**c) for c in data["chunks"]))
+    except (TypeError, KeyError, ValueError):
+        logger.warning("ignoring damaged cache file %s", path.name)
+        return None
+    return plan if plan.chunks else None
+
+
+def _save_plan(path: Path, plan: Plan) -> None:
+    _write_json(path, {"seconds": plan.seconds, "chunks": [asdict(c) for c in plan.chunks]})
+
+
+def _load_raw(path: Path) -> dict | None:
+    data = _read_json(path)
+    if data is None:
+        return None
+    segments = data.get("segments") if isinstance(data, dict) else None
+    if isinstance(segments, list) and all(
+            isinstance(x, dict) and REQUIRED_SEGMENT_KEYS <= x.keys() for x in segments):
+        return data
+    logger.warning("ignoring damaged cache file %s", path.name)
+    return None
+
+
+# ================================================================ part 2: offsets and the whole recording
+
+def place_segments(raw: dict, chunk: Chunk) -> list[dict]:
+    """Chunk-relative times -> times in the ORIGINAL recording (add the chunk's start), kept inside the chunk."""
+    placed = []
+    for seg in raw["segments"]:
+        start = min(chunk.end, chunk.start + max(0.0, float(seg["start"])))
+        end = min(chunk.end, chunk.start + max(0.0, float(seg["end"])))
+        placed.append({**seg, "start": round(start, 3), "end": round(max(start, end), 3),
+                       "chunk": chunk.index, "source_lang": raw.get("language") or "unknown"})
+    return placed
+
+
+def _transcribe_chunk(wav: Path, chunk: Chunk, s: AudioSettings) -> dict:
+    samples = read_chunk(wav, chunk)
+    if len(samples) == 0:
+        return {"language": s.language or "unknown", "language_probability": 0.0, "segments": []}
+    raw = transcribe_audio(samples, s.task, s.language, None,
+                           model_name=s.model, beam_size=s.beam_size, model_dir=s.model_dir)
+    logger.info("audio chunk %d (%.0f to %.0f s): %d segments",
+                chunk.index, chunk.start, chunk.end, len(raw["segments"]))
+    return raw
+
+
+def transcribe_recording(path: Path, meta: ResourceMeta, s: AudioSettings,
+                         timer: Timer) -> RecordingTranscript:
+    """Whole recording -> raw segments on the original timeline, using the cache wherever possible.
+
+    AudioProblem (ffmpeg missing, unreadable file, model can't load) stops everything.
+    Any other error inside one chunk fails only that chunk: the others are kept and cached,
+    and the next run retries just the missing ones. If every chunk is cached, ffmpeg isn't run at all.
+    """
+    sha = meta.file_sha256
+    chunk_seconds, search_seconds = CHUNK_MINUTES * 60, CUT_SEARCH_SECONDS
+    plan_path = plan_cache_path(sha, s.denoise, chunk_seconds, search_seconds)
+    plan = _load_plan(plan_path)
+    raws: dict[int, dict] = {}
+    if plan is not None:
+        for chunk in plan.chunks:
+            if not chunk.silent and (raw := _load_raw(chunk_cache_path(sha, chunk, s))) is not None:
+                raws[chunk.index] = raw
+    result = RecordingTranscript(seconds=0.0, chunks=[], segments=[], from_cache=len(raws))
+
+    if plan is None or any(not c.silent and c.index not in raws for c in plan.chunks):
+        with work_dir(meta.resource_id) as tmp:
+            wav = tmp / "prepared.wav"
+            with timer("audio_convert"):
+                seconds = convert_to_wav(path, wav, s.denoise)
+            if plan is None:
+                with timer("audio_pauses"):
+                    silences = find_silences(wav, seconds)
+                plan = Plan(seconds, tuple(plan_chunks(seconds, silences, chunk_seconds, search_seconds)))
+                _save_plan(plan_path, plan)
+            for chunk in plan.chunks:
+                if chunk.silent or chunk.index in raws:
+                    continue
+                try:
+                    with timer("audio_transcribe"):
+                        raw = _transcribe_chunk(wav, chunk, s)
+                except AudioProblem:
+                    raise
+                except Exception:
+                    logger.exception("audio chunk %d of resource %s failed", chunk.index, meta.resource_id)
+                    result.failed_chunks.append(chunk.index)
+                    continue
+                _write_json(chunk_cache_path(sha, chunk, s), raw)   # saved at once: a crash later can resume
+                raws[chunk.index] = raw
+                result.transcribed += 1
+
+    result.seconds, result.chunks = plan.seconds, list(plan.chunks)
+    for chunk in plan.chunks:
+        if chunk.index in raws:
+            result.segments.extend(place_segments(raws[chunk.index], chunk))
+    return result
 
 
 @register("audio")
