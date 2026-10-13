@@ -2,10 +2,11 @@
 
 Part 1: duration limits, ffprobe, light ffmpeg preprocessing, pause detection and the chunk plan.
 Part 2: settings, the faster-whisper engine, per-chunk caching and offsets.
-Part 3 (next step) adds the hallucination filter, the blocks and the real load().
+Part 3: the hallucination filter, transcript blocks and load().
 """
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import logging
 import math
@@ -15,6 +16,7 @@ import shutil
 import subprocess
 import threading
 import wave
+from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
@@ -22,8 +24,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from app.ingestion import messages
-from app.ingestion.contract import ParsedDocument, ResourceMeta
-from app.ingestion.loaders._stub import stub_document
+from app.ingestion.cleaning.common import clean_text, detect_lang, title_from_filename
+from app.ingestion.contract import Block, Location, ParsedDocument, QualityReport, ResourceMeta
 from app.ingestion.registry import register
 from app.ingestion.storage import Timer, cache_path, raw_dir, write_text_atomic
 
@@ -68,11 +70,35 @@ REFUSED_MODELS = {"tiny", "base", "small", "turbo", "large-v3-turbo"}   # too we
 DEFAULT_MODEL_DIR = Path(__file__).resolve().parents[3] / "data" / "models" / "whisper"  # backend/data is gitignored
 CACHE_VERSION = "v1"          # bump when the cached JSON layout changes, so old files are ignored
 REQUIRED_SEGMENT_KEYS = {"start", "end", "text", "avg_logprob", "no_speech_prob", "compression_ratio"}
+PARSER = "faster-whisper"
+
+# ---- Hallucination filter, applied after all chunks are merged. Kept text is never reworded ----
+DROP_NO_SPEECH_PROB = 0.6     # drop when no_speech_prob is above this AND ...
+DROP_LOGPROB = -1.0           # ... avg_logprob is below this
+DROP_COMPRESSION = 2.4        # drop looping text ("the the the the ...")
+REPEAT_RUN = 3                # the same line 3 or more times in a row: keep only the first
+STOCK_LOW_LOGPROB = -0.7      # a stock phrase is dropped only when Whisper was also unsure:
+STOCK_HIGH_NO_SPEECH = 0.5    # avg_logprob below -0.7 OR no_speech_prob above 0.5
+STOCK_PHRASES = frozenset({
+    "thanks for watching", "thank you for watching", "thank you so much for watching",
+    "thank you very much for watching", "please subscribe", "please subscribe to my channel",
+    "subscribe to my channel", "like and subscribe", "please like and subscribe",
+})
+STOCK_PREFIXES = ("subtitles by", "subtitle by", "captions by", "translated by",
+                  "transcribed by", "transcription by")
+
+# ---- Transcript blocks ----
+BLOCK_MIN_SECONDS = 60        # from here on, close the block at the end of a sentence
+BLOCK_TARGET_SECONDS = 120    # from here on, close it at the end of any segment
+BLOCK_MAX_SECONDS = 150       # never longer than this
+SHORT_TAIL_SECONDS = 30       # a shorter last block joins the one before it
+SENTENCE_ENDS = (".", "?", "!", "\u06d4", "\u061f")    # also the Urdu full stop and question mark
 
 # ---- Teacher messages, all from messages.py ----
 # Until Minahil adds the audio-specific sentences, the closest existing one is used.
 MSG_UNREADABLE = messages.UNREADABLE
 MSG_INTERNAL = messages.INTERNAL
+MSG_PARTIAL = messages.PARTIAL
 MSG_TOO_LONG = getattr(messages, "AUDIO_TOO_LONG", messages.TOO_LARGE)
 MSG_NO_SPEECH = getattr(messages, "NO_SPEECH", messages.NO_TEXT_FILE)
 MSG_LONG = getattr(messages, "AUDIO_LONG", None)   # no close existing sentence: no warning until it exists
@@ -551,8 +577,194 @@ def transcribe_recording(path: Path, meta: ResourceMeta, s: AudioSettings,
     return result
 
 
+# ================================================================ part 3: hallucination filter
+
+def _words(text: str) -> str:
+    """Lower-case words only, for comparing lines: 'Thanks for watching!' -> 'thanks for watching'."""
+    return " ".join(re.findall(r"\w+", text.lower()))
+
+
+def drop_reason(seg: dict) -> str | None:
+    """Why this segment is a hallucination, or None to keep it."""
+    if not seg["text"].strip():
+        return "empty"
+    if seg["no_speech_prob"] > DROP_NO_SPEECH_PROB and seg["avg_logprob"] < DROP_LOGPROB:
+        return "silence"
+    if seg["compression_ratio"] > DROP_COMPRESSION:
+        return "loop"
+    words = _words(seg["text"])
+    unsure = seg["avg_logprob"] < STOCK_LOW_LOGPROB or seg["no_speech_prob"] > STOCK_HIGH_NO_SPEECH
+    if unsure and (words in STOCK_PHRASES or words.startswith(STOCK_PREFIXES)):
+        return "stock phrase"
+    return None
+
+
+def filter_hallucinations(segments: list[dict]) -> tuple[list[dict], Counter[str]]:
+    """Keep real speech in time order and count what was dropped, and why. Kept text is never changed."""
+    dropped: Counter[str] = Counter()
+    kept = []
+    for seg in sorted(segments, key=lambda x: (x["start"], x["end"])):
+        reason = drop_reason(seg)
+        if reason:
+            dropped[reason] += 1
+        else:
+            kept.append(seg)
+
+    result: list[dict] = []
+    i = 0
+    while i < len(kept):                         # runs of the same line: 3 or more keep only the first
+        j = i
+        while j + 1 < len(kept) and _words(kept[j + 1]["text"]) == _words(kept[i]["text"]):
+            j += 1
+        run = kept[i:j + 1]
+        if len(run) >= REPEAT_RUN:
+            result.append(run[0])
+            dropped["repeat"] += len(run) - 1
+        else:
+            result.extend(run)
+        i = j + 1
+    return result, dropped
+
+
+# ================================================================ part 3: transcript blocks
+
+def clock(seconds: float) -> str:
+    """'12:40' under an hour, '01:02:03' past one hour."""
+    hours, rest = divmod(int(seconds), 3600)
+    minutes, secs = divmod(rest, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}" if hours else f"{minutes:02d}:{secs:02d}"
+
+
+def part_heading(number: int, start: float, end: float) -> str:
+    return f"Part {number} ({clock(start)} to {clock(end)})"
+
+
+def _ends_sentence(text: str) -> bool:
+    return text.rstrip().rstrip("\"')]\u201d\u2019").endswith(SENTENCE_ENDS)
+
+
+def group_segments(segments: list[dict]) -> list[list[dict]]:
+    """Walk segments in time order and group them into blocks of about 60 to 120 seconds.
+
+    After 60 s a block closes at the end of a sentence; after 120 s at the end of any segment;
+    it never grows past 150 s. A last group shorter than 30 s joins the one before it.
+    """
+    groups: list[list[dict]] = []
+    current: list[dict] = []
+    for seg in segments:
+        if current and seg["end"] - current[0]["start"] > BLOCK_MAX_SECONDS:
+            groups.append(current)
+            current = []
+        current.append(seg)
+        span = seg["end"] - current[0]["start"]
+        if (span >= BLOCK_MIN_SECONDS and _ends_sentence(seg["text"])) or span >= BLOCK_TARGET_SECONDS:
+            groups.append(current)
+            current = []
+    if current:
+        tail = current[-1]["end"] - current[0]["start"]
+        if (groups and tail < SHORT_TAIL_SECONDS
+                and current[-1]["end"] - groups[-1][0]["start"] <= BLOCK_MAX_SECONDS):
+            groups[-1].extend(current)
+        else:
+            groups.append(current)
+    return groups
+
+
+def _confidence(group: list[dict]) -> float:
+    """Whisper's avg_logprob, weighted by segment length, turned into 0..1 (exp of the mean log-probability)."""
+    weights = [max(seg["end"] - seg["start"], 0.01) for seg in group]
+    mean = sum(seg["avg_logprob"] * w for seg, w in zip(group, weights)) / sum(weights)
+    return round(min(1.0, max(0.0, math.exp(mean))), 3)
+
+
+def _source_lang(group: list[dict]) -> str:
+    return Counter(seg.get("source_lang", "unknown") for seg in group).most_common(1)[0][0]
+
+
+def build_blocks(segments: list[dict], title: str, s: AudioSettings) -> list[Block]:
+    """Grouped segments -> contract Blocks: seq 0, 1, 2 with no gaps, title first, times in seconds."""
+    pieces = []
+    for group in group_segments(segments):
+        # clean_text() joins single line breaks into spaces: fine for an English transcript.
+        text = clean_text(" ".join(seg["text"].strip() for seg in group))
+        if text:
+            pieces.append((group, text))
+    spans = [(g[0]["start"], max(seg["end"] for seg in g)) for g, _ in pieces]
+    for i in range(len(spans) - 1):                      # a block never runs into the next one
+        start, end = spans[i]
+        spans[i] = (start, max(start, min(end, spans[i + 1][0])))
+
+    blocks = []
+    for seq, ((group, text), (start, end)) in enumerate(zip(pieces, spans)):
+        blocks.append(Block(
+            seq=seq, kind="transcript", text=text,
+            heading_path=[title, part_heading(seq + 1, start, end)],
+            loc=Location(t_start=round(start, 2), t_end=round(end, 2)),
+            lang=detect_lang(text), confidence=_confidence(group),
+            extra={"source_lang": _source_lang(group), "task": s.task, "model": s.model}))
+    return blocks
+
+
+# ================================================================ part 3: the document and load()
+
+def _engine_version() -> str:
+    try:
+        return importlib.metadata.version("faster-whisper")
+    except importlib.metadata.PackageNotFoundError:
+        return "not-installed"
+
+
+def _failed(meta: ResourceMeta, reason: str) -> ParsedDocument:
+    from app.ingestion.dispatcher import failed_document   # shared helper; imported here so imports stay one-way
+    return failed_document(meta, meta.precheck.source_type, reason)
+
+
+def _load(path: Path, meta: ResourceMeta) -> ParsedDocument:
+    timer = Timer()
+    s = read_settings()
+    title = title_from_filename(meta.file_name)
+    with timer("audio_probe"):
+        seconds = probe_duration(path)
+    warnings = check_duration(seconds)                   # raises when too short or too long
+
+    rec = transcribe_recording(path, meta, s, timer)
+    with timer("audio_blocks"):
+        kept, dropped = filter_hallucinations(rec.segments)
+        blocks = build_blocks(kept, title, s)
+    logger.info(
+        "audio %s: %.0f s, %d chunks (%d silent, %d from cache, %d transcribed, %d failed), "
+        "%d segments, dropped %s, %d blocks, model=%s task=%s language=%s",
+        meta.resource_id, rec.seconds, len(rec.chunks), sum(c.silent for c in rec.chunks),
+        rec.from_cache, rec.transcribed, len(rec.failed_chunks), len(rec.segments),
+        dict(dropped) or "none", len(blocks), s.model, s.task, s.language or "auto")
+
+    if not blocks:
+        if rec.failed_chunks:            # part of it couldn't be listened to; a retry resumes from the cache
+            raise AudioProblem(MSG_INTERNAL, f"chunks {rec.failed_chunks} failed and no other speech was found")
+        raise AudioProblem(MSG_NO_SPEECH, "no speech left after the hallucination filter")
+    status = "ok"
+    if rec.failed_chunks:
+        status = "degraded"
+        warnings.append(MSG_PARTIAL)
+
+    return ParsedDocument(
+        resource_id=meta.resource_id, course_id=meta.course_id, file_name=meta.file_name,
+        file_sha256=meta.file_sha256, source_type=meta.precheck.source_type, title=title,
+        parser=PARSER, parser_version=_engine_version(), blocks=blocks,
+        quality=QualityReport(
+            status=status, warnings=warnings, units_total=int(round(rec.seconds)),
+            chars_total=sum(len(b.text) for b in blocks),
+            avg_confidence=round(sum(b.confidence for b in blocks) / len(blocks), 3),
+            seconds_taken=dict(timer.seconds)))
+
+
 @register("audio")
 def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
-    # Temporary until Step 4. "transcript" is the contract's block kind for audio; the old
-    # placeholder's kind="audio" is not a valid kind, so every audio file failed with INTERNAL.
-    return stub_document(meta, kind="transcript")
+    try:
+        return _load(path, meta)
+    except AudioProblem as problem:
+        logger.warning("audio %s failed: %s", meta.resource_id, problem.detail or problem.message)
+        return _failed(meta, problem.message)
+    except Exception:                    # a bug or something unexpected: never crash the upload
+        logger.exception("audio loader crashed on resource %s", meta.resource_id)
+        return _failed(meta, MSG_INTERNAL)
