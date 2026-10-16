@@ -8,7 +8,9 @@ IMAGE_HARD_TO_READ = "This image was hard to read; answers from it may be less r
 PARTIAL = "Part of this file could not be read, so some content may be missing."
 GARBLED = "Some text in this file looks garbled; answers from it may be less reliable."
 INTERNAL = "Something went wrong while reading this file. Please try again later."
-
+AUDIO_TOO_LONG = "This recording is too long. Please split it into parts under 3 hours."
+NO_SPEECH = "No speech was found in this recording."
+AUDIO_LONG = "This is a long recording, so processing it takes a while."
 
 def format_ranges(nums: list[int]) -> str:
     """[3, 7, 8, 9] -> '3, 7 to 9'"""

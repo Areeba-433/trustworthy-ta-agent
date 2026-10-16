@@ -18,3 +18,6 @@ pillow>=12.3.0
 torch==2.14.1
 docling==2.137.0
 easyocr==1.7.2
+# audio
+faster-whisper==1.2.1
+av==18.1.0
