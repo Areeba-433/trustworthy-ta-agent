@@ -1,5 +1,5 @@
 # backend/app/ingestion/contract.py   (owner: Minahil; changes only by a PR all four approve)
-"""The one shape every loader returns and the chunker reads."""
+"""The shapes every loader and chunker return: ParsedDocument (blocks) and ChunkedDocument (chunks)."""
 from __future__ import annotations
 
 from typing import Literal
@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 CONTRACT_VERSION = "2.0"
 
 BlockKind = Literal["heading", "paragraph", "list_item", "table", "caption",
-                    "slide_notes", "code", "transcript"]
+                    "figure_text", "slide_notes", "code", "transcript", "formula"]
 SourceType = Literal["pdf", "docx", "pptx", "audio", "code", "text"]
 Lang = Literal["en", "ur", "mixed", "code"]
 Status = Literal["ok", "degraded", "failed"]
@@ -20,11 +20,18 @@ class _Strict(BaseModel):
 
 class Location(_Strict):
     page: int | None = Field(None, ge=1)             # pdf
+    page_end: int | None = Field(None, ge=1)         # pdf: set only when the content runs onto later pages
     slide: int | None = Field(None, ge=1)            # pptx
     line_start: int | None = Field(None, ge=1)       # code, text
     line_end: int | None = Field(None, ge=1)
     t_start: float | None = Field(None, ge=0)        # audio, seconds
     t_end: float | None = Field(None, ge=0)
+
+    @model_validator(mode="after")
+    def _check_page_range(self) -> "Location":
+        if self.page_end is not None and (self.page is None or self.page_end < self.page):
+            raise ValueError("page_end needs a page and cannot come before it")
+        return self
 
 
 class Block(_Strict):
@@ -34,7 +41,7 @@ class Block(_Strict):
     heading_path: list[str] = Field(min_length=1)   # the context; starts with the title
     loc: Location
     lang: Lang = "en"
-    confidence: float | None = Field(None, ge=0, le=1)   # set only for speech-to-text
+    confidence: float | None = Field(None, ge=0, le=1)   # set only for speech-to-text (audio)
     extra: dict = Field(default_factory=dict)       # track-private; the chunker never reads it
 
 
@@ -105,3 +112,44 @@ class ParsedDocument(_Strict):
             if needed and getattr(b.loc, needed) is None:
                 raise ValueError(f"block {i}: loc.{needed} is required for {self.source_type}")
         return self
+
+
+MAX_CHUNK_TOKENS = 512      # a ceiling, not the cut rule: structure decides where chunks end (see the plan)
+
+
+class Chunk(_Strict):
+    seq: int = Field(ge=0)
+    chunk_id: str                                    # f"{resource_id}:{seq}": a re-run overwrites, never duplicates
+    text: str = Field(min_length=1)                  # what the student sees and the LLM reads
+    heading_path: list[str] = Field(min_length=1)    # starts with the title: context, and the DOCX citation
+    loc: Location
+    kinds: list[BlockKind] = Field(min_length=1)     # the block kinds inside, e.g. ["paragraph", "code"]
+    block_seqs: list[int] = Field(min_length=1)      # the blocks it came from: traceable to the source
+    token_count: int = Field(ge=1, le=MAX_CHUNK_TOKENS)
+
+
+class ChunkedDocument(_Strict):
+    contract_version: str = CONTRACT_VERSION
+    resource_id: str
+    course_id: str
+    source_type: SourceType
+    title: str = Field(min_length=1)
+    chunker: str                                     # e.g. "pdf-sections/1": goes into the cache key and the report
+    chunks: list[Chunk] = Field(min_length=1)        # a failed ParsedDocument is never chunked
+
+    @model_validator(mode="after")
+    def _check_rules(self) -> "ChunkedDocument":
+        needed = LOCATION_FIELD[self.source_type]
+        for i, c in enumerate(self.chunks):
+            if c.seq != i or c.chunk_id != f"{self.resource_id}:{i}":
+                raise ValueError(f"chunk {i}: seq and chunk_id must follow the order")
+            if c.heading_path[0] != self.title:
+                raise ValueError(f"chunk {i}: heading_path must start with the title")
+            if needed and getattr(c.loc, needed) is None:
+                raise ValueError(f"chunk {i}: loc.{needed} is required for {self.source_type}")
+        return self
+
+
+def embedding_text(chunk: Chunk) -> str:
+    """What gets embedded later: the heading path gives a short chunk its context."""
+    return " > ".join(chunk.heading_path) + "\n" + chunk.text
