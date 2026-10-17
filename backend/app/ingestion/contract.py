@@ -5,11 +5,11 @@ from __future__ import annotations
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-CONTRACT_VERSION = "1.0"
+CONTRACT_VERSION = "2.0"
 
 BlockKind = Literal["heading", "paragraph", "list_item", "table", "caption",
-                    "slide_notes", "code", "transcript", "ocr_text"]
-SourceType = Literal["pdf", "docx", "pptx", "scanned_pdf", "image", "audio", "code", "text"]
+                    "slide_notes", "code", "transcript"]
+SourceType = Literal["pdf", "docx", "pptx", "audio", "code", "text"]
 Lang = Literal["en", "ur", "mixed", "code"]
 Status = Literal["ok", "degraded", "failed"]
 
@@ -19,7 +19,7 @@ class _Strict(BaseModel):
 
 
 class Location(_Strict):
-    page: int | None = Field(None, ge=1)             # pdf, scanned_pdf, image (=1)
+    page: int | None = Field(None, ge=1)             # pdf
     slide: int | None = Field(None, ge=1)            # pptx
     line_start: int | None = Field(None, ge=1)       # code, text
     line_end: int | None = Field(None, ge=1)
@@ -34,7 +34,7 @@ class Block(_Strict):
     heading_path: list[str] = Field(min_length=1)   # the context; starts with the title
     loc: Location
     lang: Lang = "en"
-    confidence: float | None = Field(None, ge=0, le=1)   # set only for OCR and speech-to-text
+    confidence: float | None = Field(None, ge=0, le=1)   # set only for speech-to-text
     extra: dict = Field(default_factory=dict)       # track-private; the chunker never reads it
 
 
@@ -61,7 +61,6 @@ class QualityReport(_Strict):
     status: Status
     warnings: list[str] = Field(default_factory=list)      # plain words for the teacher
     units_total: int = Field(ge=0)                         # pages, slides, seconds or lines
-    units_ocr: int = Field(0, ge=0)
     chars_total: int = Field(ge=0)
     avg_confidence: float | None = Field(None, ge=0, le=1)
     seconds_taken: dict[str, float] = Field(default_factory=dict)
@@ -69,7 +68,7 @@ class QualityReport(_Strict):
 
 # Which Location field is mandatory per source type. DOCX has no pages: its citation is the heading path.
 LOCATION_FIELD: dict[str, str | None] = {
-    "pdf": "page", "scanned_pdf": "page", "image": "page", "pptx": "slide",
+    "pdf": "page", "pptx": "slide",
     "audio": "t_start", "code": "line_start", "text": "line_start", "docx": None,
 }
 

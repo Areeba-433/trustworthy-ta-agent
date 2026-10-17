@@ -13,7 +13,7 @@ from app.ingestion.storage import Timer, file_sha256, parsed_path, write_text_at
 
 logger = logging.getLogger("tta.ingestion")
 
-_HEAVY: set[str] = {"pdf", "docx", "pptx", "scanned_pdf", "image"}   # these use a lot of memory
+_HEAVY: set[str] = {"pdf", "docx", "pptx"}   # these use a lot of memory
 _heavy_slot = threading.Semaphore(1)                                   # only one heavy file at a time
 
 
