@@ -1,9 +1,11 @@
+
+from types import SimpleNamespace
 import pypdfium2 as pdfium
 import pytest
 from PIL import Image, ImageDraw
 
 from app.core.config import settings
-
+from app.ingestion.chunking import tokens
 
 @pytest.fixture
 def data_dir(tmp_path, monkeypatch):
@@ -68,3 +70,13 @@ def make_pdf(tmp_path):
         typed.close()
         return out
     return make
+
+
+@pytest.fixture
+def word_tokens(monkeypatch):
+    """count_tokens() counts one token per word: no tokenizer download, and every size is easy to read."""
+    class _WordTokenizer:
+        def encode(self, text: str, add_special_tokens: bool = True) -> SimpleNamespace:
+            return SimpleNamespace(ids=text.split())
+
+    monkeypatch.setattr(tokens, "get_tokenizer", lambda: _WordTokenizer())
