@@ -1,6 +1,6 @@
 import pytest
 
-from app.ingestion import messages, registry
+from app.ingestion import dispatcher, messages, registry
 from app.ingestion.dispatcher import ingest_file
 
 
@@ -40,3 +40,35 @@ def test_a_crashing_department_becomes_a_failed_document(digital_pdf, data_dir, 
 def test_unsafe_resource_id_is_refused(digital_pdf, data_dir):
     with pytest.raises(ValueError):
         ingest_file(digital_pdf, "../outside", "c1")
+
+
+class _SlotSpy:
+    """Stands in for the heavy slot and counts how many files took it."""
+    def __init__(self) -> None:
+        self.taken = 0
+
+    def __enter__(self) -> None:
+        self.taken += 1
+
+    def __exit__(self, *exc: object) -> bool:
+        return False                                         # never hide an exception
+
+
+def test_a_docling_file_takes_the_heavy_slot(digital_pdf, data_dir, monkeypatch):
+    spy = _SlotSpy()
+    monkeypatch.setattr(dispatcher, "_heavy_slot", spy)
+    ingest_file(digital_pdf, "r5", "c1")
+    assert spy.taken == 1
+
+
+def test_a_light_file_does_not_wait_for_the_heavy_slot(tmp_path, data_dir, monkeypatch):
+    spy = _SlotSpy()
+    monkeypatch.setattr(dispatcher, "_heavy_slot", spy)
+    source = tmp_path / "hello.cpp"
+    source.write_text("int main() { return 0; }")
+    ingest_file(source, "r6", "c1")
+    assert spy.taken == 0
+
+def test_only_the_docling_formats_are_heavy():
+    heavy = {st for st in registry.registered() if registry.is_heavy(st)}
+    assert heavy == {"pdf", "docx", "pptx"}

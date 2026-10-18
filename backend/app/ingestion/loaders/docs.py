@@ -5,6 +5,6 @@ from app.ingestion.contract import ParsedDocument, ResourceMeta
 from app.ingestion.loaders._stub import stub_document
 from app.ingestion.registry import register
 
-@register("pdf", "docx", "pptx")
+@register("pdf", "docx", "pptx", heavy=True)
 def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
     return stub_document(meta, kind="paragraph")

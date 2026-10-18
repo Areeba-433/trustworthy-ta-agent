@@ -8,13 +8,12 @@ from app.ingestion import messages
 from app.ingestion.cleaning.common import title_from_filename
 from app.ingestion.contract import ParsedDocument, QualityReport, ResourceMeta, SourceType
 from app.ingestion.precheck import precheck
-from app.ingestion.registry import get_loader
+from app.ingestion.registry import get_loader , is_heavy
 from app.ingestion.storage import Timer, file_sha256, parsed_path, write_text_atomic
-
 logger = logging.getLogger("tta.ingestion")
 
 _HEAVY: set[str] = {"pdf", "docx", "pptx"}   # these use a lot of memory
-_heavy_slot = threading.Semaphore(1)                                   # only one heavy file at a time
+_heavy_slot = threading.Semaphore(1)         # only one heavy file at a time: see register(heavy=True)
 
 
 def failed_document(meta: ResourceMeta, source_type: SourceType, reason: str) -> ParsedDocument:
@@ -39,7 +38,7 @@ def ingest_file(path: Path, resource_id: str, course_id: str) -> ParsedDocument:
         doc = failed_document(meta, pre.source_type, pre.reason)
     else:
         loader = get_loader(pre.source_type)
-        slot = _heavy_slot if pre.source_type in _HEAVY else nullcontext()
+        slot = _heavy_slot if is_heavy(pre.source_type) else nullcontext()
         try:
             with timer("load"), slot:
                 doc = loader(path, meta)
