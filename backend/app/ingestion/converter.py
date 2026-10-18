@@ -1,8 +1,11 @@
-"""Run Docling on a file. One converter per format, built once, because loading the AI models takes seconds."""
+"""Run Docling on a file. One converter per format, built once, and each result kept, because Docling is slow."""
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from dataclasses import dataclass
+from enum import Enum
 from functools import lru_cache
 from importlib.metadata import version
 from pathlib import Path
@@ -15,6 +18,7 @@ from docling_core.types.doc import DoclingDocument
 
 from app.ingestion import messages
 from app.ingestion.documents import FileRefused
+from app.ingestion.storage import cache_path, write_text_atomic
 
 if TYPE_CHECKING:                          # for type hints only: the real import waits until it's needed
     from docling.document_converter import DocumentConverter
@@ -59,10 +63,48 @@ def get_converter(source_type: str) -> DocumentConverter:
 class Conversion:
     document: DoclingDocument
     problems: tuple[str, ...] = ()         # passed on to parsed_document(problems=...)
+    from_cache: bool = False
 
 
-def convert(path: Path, source_type: str) -> Conversion:
-    """Docling's result in our words. A broken file raises FileRefused; a crash in Docling raises RuntimeError."""
+def convert(path: Path, source_type: str, file_sha256: str | None = None) -> Conversion:
+    """Docling's result in our words. With the file's hash, a result from an earlier run is reused.
+
+    A broken file raises FileRefused; a crash in Docling raises RuntimeError.
+    """
+    cached = cache_file(file_sha256, source_type) if file_sha256 else None
+    if cached is not None and cached.exists():
+        try:
+            return Conversion(DoclingDocument.load_from_json(cached), from_cache=True)
+        except (OSError, ValueError):      # a damaged cache file must never stop ingestion
+            logger.warning("unreadable cache file, reading the original again: %s", cached.name)
+    conversion = _run_docling(path, source_type)
+    if cached is not None and not conversion.problems:      # keep complete results only
+        write_text_atomic(cached, json.dumps(conversion.document.export_to_dict()))
+    return conversion
+
+
+def cache_file(file_sha256: str, source_type: str) -> Path:
+    """Where a file's Docling result is kept. The name changes with Docling, docling-core or our settings."""
+    return cache_path(file_sha256, PARSER, PARSER_VERSION, variant=settings_fingerprint(source_type))
+
+
+def settings_fingerprint(source_type: str) -> str:
+    """12 characters that change whenever docling-core or our settings for this format change."""
+    settings = pdf_options().model_dump(exclude={"accelerator_options"}) if source_type == "pdf" else {}
+    text = json.dumps([source_type, version("docling-core"), settings], sort_keys=True, default=_json_fallback)
+    return hashlib.sha256(text.encode()).hexdigest()[:12]
+
+
+def _json_fallback(item: object) -> object:
+    """For values JSON can't write. Sets are sorted, because their order changes from run to run."""
+    if isinstance(item, (set, frozenset)):
+        return sorted(item, key=str)
+    if isinstance(item, Enum):
+        return item.value
+    return str(item)
+
+
+def _run_docling(path: Path, source_type: str) -> Conversion:
     result = get_converter(source_type).convert(path, raises_on_error=False)
     status = result.status
     if status == ConversionStatus.SUCCESS:
