@@ -3,15 +3,14 @@ TYPE_MISMATCH = "This file's content doesn't match its extension. Please upload 
 TOO_LARGE = "This file is larger than the upload limit. Please split it into smaller files."
 UNREADABLE = "We couldn't read this file. Check that it opens normally, then upload it again."
 NO_TEXT_FILE = "No readable text was found in this file."
-NO_TEXT_IMAGE = "This image has no readable text."
-IMAGE_HARD_TO_READ = "This image was hard to read; answers from it may be less reliable."
 PARTIAL = "Part of this file could not be read, so some content may be missing."
 GARBLED = "Some text in this file looks garbled; answers from it may be less reliable."
 INTERNAL = "Something went wrong while reading this file. Please try again later."
+SCANNED_PDF = "This PDF looks like a scan: most of its pages are pictures, not text. Please upload the digital version."
+GARBLED_PDF = "The text in most pages of this PDF can't be read correctly. Please upload another copy of the file."
 AUDIO_TOO_LONG = "This recording is too long. Please split it into parts under 3 hours."
 NO_SPEECH = "No speech was found in this recording."
 AUDIO_LONG = "This is a long recording, so processing it takes a while."
-
 def format_ranges(nums: list[int]) -> str:
     """[3, 7, 8, 9] -> '3, 7 to 9'"""
     groups: list[list[int]] = []
@@ -34,7 +33,3 @@ def no_text_units(unit_name: str, units: list[int]) -> str:
     if len(set(units)) == 1:
         return f"{unit_name.removesuffix('s')} {units[0]} has no readable text (it may be a picture only)."
     return f"{unit_name} {format_ranges(units)} have no readable text (they may be pictures only)."
-
-
-def too_many_scanned_pages(limit: int) -> str:
-    return f"This scanned file has too many pages to read at once. Please split it into files of {limit} pages or fewer."

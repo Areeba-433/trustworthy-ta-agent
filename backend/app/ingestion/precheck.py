@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_c
-from PIL import Image
 
 from app.core.config import settings
 from app.ingestion import messages
@@ -13,7 +12,6 @@ from app.ingestion.contract import PrecheckResult, SourceType
 
 SUPPORTED_EXTENSIONS: dict[str, SourceType] = {
     ".pdf": "pdf", ".docx": "docx", ".pptx": "pptx",
-    ".png": "image", ".jpg": "image", ".jpeg": "image",
     ".mp3": "audio", ".m4a": "audio", ".wav": "audio",
     ".cpp": "code", ".h": "code", ".hpp": "code",
     ".txt": "text", ".md": "text",
@@ -21,14 +19,14 @@ SUPPORTED_EXTENSIONS: dict[str, SourceType] = {
 _MAGIC: dict[str, tuple[bytes, ...]] = {            # the signature each file type starts with
     "pdf": (b"%PDF",),
     "docx": (b"PK\x03\x04",),
-    "pptx": (b"PK\x03\x04",),
-    "image": (b"\x89PNG", b"\xff\xd8\xff"),                 # PNG, JPG,
+    "pptx": (b"PK\x03\x04",)
 }
 MIN_LETTERS_PER_PAGE = 25      # starting values: tune them on real samples later
 SCANNED_IMAGE_SHARE = 0.5
 LARGE_IMAGE_SHARE = 0.3
 GARBAGE_MAX = 0.15
-
+UNREADABLE_SHARE_MAX = 0.2     # more than 1 page in 5 without readable text: treat the file as a scan and refuse it
+                               # (a book's picture cover or a few full-page figures stay under this)
 
 class UnsupportedFileType(ValueError):
     pass
@@ -58,12 +56,6 @@ def _check(path: Path, source_type: SourceType) -> PrecheckResult:
                 return _fail(source_type, messages.TYPE_MISMATCH)
     if source_type == "pdf":
         return _check_pdf(path)
-    if source_type == "image":
-        try:
-            with Image.open(path) as im:
-                im.verify()                     # quick check that the image isn't broken
-        except Exception:
-            return _fail("image", messages.UNREADABLE)
     return PrecheckResult(source_type=source_type)
 
 
@@ -101,9 +93,9 @@ def _check_pdf(path: Path) -> PrecheckResult:
                 large.append(i + 1)
     finally:
         pdf.close()
-    if len(scanned) + len(garbage) > settings.INGESTION_MAX_OCR_PAGES:   # OCR is slow: limit pages per file
-        return _fail("scanned_pdf", messages.too_many_scanned_pages(settings.INGESTION_MAX_OCR_PAGES))
-    return PrecheckResult(
-        source_type="scanned_pdf" if (scanned or garbage) else "pdf",
-        pages_total=total, scanned_pages=scanned, garbage_pages=garbage, large_image_pages=large,
-)
+    if total and (len(scanned) + len(garbage)) / total > UNREADABLE_SHARE_MAX:   # mostly pictures or broken text
+       return _fail("pdf", messages.SCANNED_PDF if len(scanned) >= len(garbage) else messages.GARBLED_PDF)
+    return PrecheckResult(                  # a few unreadable pages are listed so the loader can skip and report them
+        source_type="pdf", pages_total=total,
+        scanned_pages=scanned, garbage_pages=garbage, large_image_pages=large,
+    )
