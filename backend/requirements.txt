@@ -16,6 +16,7 @@ PyJWT>=2.14.0
 pypdfium2>=5.14.0
 torch==2.14.1
 docling==2.134.0
+tokenizers==0.23.2
 # audio
 faster-whisper==1.2.1
 av==18.1.0
