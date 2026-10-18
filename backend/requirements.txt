@@ -20,3 +20,7 @@ tokenizers==0.23.2
 # audio
 faster-whisper==1.2.1
 av==18.1.0
+docling-core==2.100.0
+# tests generate Word and PowerPoint files with these
+python-docx==1.2.0
+python-pptx==1.0.2
