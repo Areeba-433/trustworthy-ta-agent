@@ -5,6 +5,8 @@ Part 3 runs Docling's PDF models, which download the first time, so it runs only
 """
 import os
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,6 +17,7 @@ from docling_core.types.doc import DoclingDocument
 
 from app.ingestion import converter, messages
 from app.ingestion.documents import FileRefused
+from app.ingestion.storage import file_sha256
 
 
 # ================================================================ part 1: settings and status, no models
@@ -115,8 +118,68 @@ def test_slides_renamed_to_docx_are_refused_as_a_mismatch(tmp_path):
         converter.convert(renamed, "docx")
     assert refused.value.reason == messages.TYPE_MISMATCH
 
+# ================================================================ part 3: the cache of Docling results
 
-# ================================================================ part 3: real Docling PDF models (on request)
+def _docling_must_not_run(monkeypatch):
+    def fail(source_type):
+        raise AssertionError("Docling ran, but the result should have come from the cache")
+
+    monkeypatch.setattr(converter, "get_converter", fail)
+
+
+def test_a_file_read_once_comes_from_the_cache_the_second_time(tmp_path, data_dir, monkeypatch):
+    path = _word_file(tmp_path / "notes.docx")
+    first = converter.convert(path, "docx", file_sha256(path))
+    _docling_must_not_run(monkeypatch)
+    second = converter.convert(path, "docx", file_sha256(path))
+    assert (first.from_cache, second.from_cache) == (False, True)
+    assert second.document.export_to_dict() == first.document.export_to_dict()
+
+
+def test_without_the_hash_nothing_is_cached(tmp_path, data_dir):
+    path = _word_file(tmp_path / "notes.docx")
+    converter.convert(path, "docx")
+    assert not converter.cache_file(file_sha256(path), "docx").exists()
+
+
+def test_a_partial_result_is_not_cached(monkeypatch, data_dir):
+    _fake_docling(monkeypatch, ConversionStatus.PARTIAL_SUCCESS, DoclingComponentType.PIPELINE)
+    converter.convert(Path("book.pdf"), "pdf", "a" * 64)
+    assert not converter.cache_file("a" * 64, "pdf").exists()        # next time Docling may read all of it
+
+
+def test_a_damaged_cache_file_is_read_again_and_replaced(tmp_path, data_dir):
+    path = _word_file(tmp_path / "notes.docx")
+    cached = converter.cache_file(file_sha256(path), "docx")
+    cached.write_text("{ half a file", encoding="utf-8")
+    conversion = converter.convert(path, "docx", file_sha256(path))
+    assert not conversion.from_cache
+    assert [t.text for t in conversion.document.texts] == ["Stacks", "Last in, first out."]
+    assert converter.convert(path, "docx", file_sha256(path)).from_cache
+
+
+def test_the_cache_name_changes_when_our_settings_change(monkeypatch, data_dir):
+    before = converter.cache_file("a" * 64, "pdf")
+    monkeypatch.setattr(converter, "PDF_TIMEOUT_SECONDS", 60.0)
+    assert converter.cache_file("a" * 64, "pdf") != before
+    assert converter.cache_file("a" * 64, "docx") != before
+    assert converter.cache_file("a" * 64, "docx") != converter.cache_file("a" * 64, "pptx")
+
+
+def test_sets_are_sorted_before_hashing():
+    assert converter._json_fallback(set("fbdaec")) == list("abcdef")
+
+
+def test_the_cache_name_is_the_same_in_every_run():
+    """Python orders sets differently in each run; a name that changed would never find its cache again."""
+    code = "from app.ingestion import converter; print(converter.settings_fingerprint('pdf'))"
+    backend = Path(__file__).resolve().parents[2]
+    names = {subprocess.run([sys.executable, "-c", code], cwd=backend, capture_output=True, text=True, check=True,
+                            env={**os.environ, "PYTHONHASHSEED": seed}).stdout.strip() for seed in ("0", "3")}
+    assert len(names) == 1 and len(names.pop()) == 12
+    
+
+# ================================================================ part 4: real Docling PDF models (on request)
 
 @pytest.mark.skipif(os.getenv("DOCLING_PDF_TEST") != "1",
                     reason="PDF models test: set DOCLING_PDF_TEST=1 (downloads Docling's models the first time)")
