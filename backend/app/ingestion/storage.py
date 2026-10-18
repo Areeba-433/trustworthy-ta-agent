@@ -31,6 +31,10 @@ def parsed_path(resource_id: str) -> Path:
     return resource_dir(resource_id) / "parsed.json"
 
 
+def chunks_path(resource_id: str) -> Path:
+    return resource_dir(resource_id) / "chunks.json"
+
+
 def cache_path(sha: str, parser: str, version: str, variant: str = "default", suffix: str = ".json") -> Path:
     folder = data_dir() / "_cache"
     folder.mkdir(parents=True, exist_ok=True)
