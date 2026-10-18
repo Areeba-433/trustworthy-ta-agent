@@ -6,6 +6,14 @@ from app.ingestion.cleaning.common import title_from_filename
 from app.ingestion.contract import Block, ParsedDocument, QualityReport, ResourceMeta, SourceType
 
 
+class FileRefused(Exception):
+    """Raise inside a loader to fail the file with a message from messages.py that the teacher can act on."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 def failed_document(meta: ResourceMeta, source_type: SourceType, reason: str) -> ParsedDocument:
     return ParsedDocument(
         resource_id=meta.resource_id, course_id=meta.course_id, file_name=meta.file_name,
