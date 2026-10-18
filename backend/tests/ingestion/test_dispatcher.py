@@ -2,6 +2,7 @@ import pytest
 
 from app.ingestion import dispatcher, messages, registry
 from app.ingestion.dispatcher import ingest_file
+from app.ingestion.documents import FileRefused
 
 
 def test_a_file_goes_all_the_way_through(digital_pdf, data_dir):
@@ -35,6 +36,18 @@ def test_a_crashing_department_becomes_a_failed_document(digital_pdf, data_dir, 
     doc = ingest_file(digital_pdf, "r3", "c1")
     assert doc.quality.status == "failed"
     assert doc.quality.warnings == [messages.INTERNAL]
+
+
+def test_a_refused_file_fails_with_the_loaders_own_message(digital_pdf, data_dir, monkeypatch):
+    registry.registered()
+
+    def refuse(path, meta):
+        raise FileRefused(messages.UNREADABLE)
+
+    monkeypatch.setitem(registry._LOADERS, "pdf", refuse)
+    doc = ingest_file(digital_pdf, "r7", "c1")
+    assert doc.quality.status == "failed"
+    assert doc.quality.warnings == [messages.UNREADABLE]
 
 
 def test_unsafe_resource_id_is_refused(digital_pdf, data_dir):

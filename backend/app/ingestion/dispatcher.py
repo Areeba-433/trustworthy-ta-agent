@@ -6,7 +6,7 @@ from pathlib import Path
 
 from app.ingestion import messages
 from app.ingestion.contract import ParsedDocument, ResourceMeta
-from app.ingestion.documents import failed_document
+from app.ingestion.documents import FileRefused, failed_document
 from app.ingestion.precheck import precheck
 from app.ingestion.registry import get_loader , is_heavy
 from app.ingestion.storage import Timer, file_sha256, parsed_path, write_text_atomic
@@ -35,7 +35,10 @@ def ingest_file(path: Path, resource_id: str, course_id: str) -> ParsedDocument:
             if (doc.resource_id, doc.file_sha256) != (resource_id, sha):
                 raise ValueError("loader returned a document for a different file")
             doc = ParsedDocument.model_validate(doc.model_dump())   # check the rules once more
-        except Exception:
+        except FileRefused as refused:          # the file's fault: tell the teacher what to fix
+            logger.info("file refused: resource=%s reason=%s", resource_id, refused.reason)
+            doc = failed_document(meta, pre.source_type, refused.reason)
+        except Exception:                       # our fault: details in the log, a polite message for the teacher
             logger.exception("ingestion failed: resource=%s type=%s", resource_id, pre.source_type)
             doc = failed_document(meta, pre.source_type, messages.INTERNAL)
 
