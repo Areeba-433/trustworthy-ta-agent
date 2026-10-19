@@ -1,5 +1,4 @@
-"""process(): file -> parsed.json -> chunks.json.
-The PDF loader is still a stub here, and count_tokens() counts words (word_tokens)."""
+"""process(): file -> parsed.json -> chunks.json. PDFs use the Docling stand-in from conftest; tokens are words."""
 from app.ingestion import messages
 from app.ingestion.chunking import registry as chunker_registry
 from app.ingestion.contract import ChunkedDocument

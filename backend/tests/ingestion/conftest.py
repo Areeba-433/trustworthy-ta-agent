@@ -2,10 +2,15 @@
 from types import SimpleNamespace
 import pypdfium2 as pdfium
 import pytest
+from docling_core.types.doc.base import BoundingBox
+from docling_core.types.doc.document import DoclingDocument
+from docling_core.types.doc.labels import DocItemLabel
+from docling_core.types.doc.common.reference import ProvenanceItem
 from PIL import Image, ImageDraw
 
 from app.core.config import settings
 from app.ingestion.chunking import tokens
+from app.ingestion.converter import Conversion
 
 @pytest.fixture
 def data_dir(tmp_path, monkeypatch):
@@ -80,3 +85,30 @@ def word_tokens(monkeypatch):
             return SimpleNamespace(ids=text.split())
 
     monkeypatch.setattr(tokens, "get_tokenizer", lambda: _WordTokenizer())
+
+
+@pytest.fixture(autouse=True)
+def fake_docling_pdf(monkeypatch):
+    """Unit tests never run Docling's PDF models: they are slow and download on first use. The PDF loader gets
+    fake_pdf_convert() instead; a test can ask for this fixture to call the fake itself.
+    The real models are tested in test_converter.py with DOCLING_PDF_TEST=1."""
+    from app.ingestion.loaders import pdf
+
+    monkeypatch.setattr(pdf, "convert", fake_pdf_convert)
+    return fake_pdf_convert
+
+
+def fake_pdf_convert(path, source_type, file_sha256=None) -> Conversion:
+    """A stand-in for Docling: each page's text layer becomes one paragraph with its page number."""
+    document = DoclingDocument(name=path.stem)
+    pdf_file = pdfium.PdfDocument(str(path))
+    try:
+        for i in range(len(pdf_file)):
+            text = pdf_file[i].get_textpage().get_text_range().strip()
+            if text:
+                box = BoundingBox(l=0, t=0, r=1, b=1)
+                document.add_text(DocItemLabel.TEXT, text,
+                                  prov=ProvenanceItem(page_no=i + 1, bbox=box, charspan=(0, len(text))))
+    finally:
+        pdf_file.close()
+    return Conversion(document)
