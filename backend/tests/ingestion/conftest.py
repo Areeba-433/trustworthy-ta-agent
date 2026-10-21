@@ -1,16 +1,14 @@
-
 from types import SimpleNamespace
+
 import pypdfium2 as pdfium
 import pytest
-from docling_core.types.doc.base import BoundingBox
-from docling_core.types.doc.document import DoclingDocument
-from docling_core.types.doc.labels import DocItemLabel
-from docling_core.types.doc.common.reference import ProvenanceItem
+from docling_core.types.doc import BoundingBox, CoordOrigin, DocItemLabel, DoclingDocument, ProvenanceItem
 from PIL import Image, ImageDraw
 
 from app.core.config import settings
 from app.ingestion.chunking import tokens
 from app.ingestion.converter import Conversion
+
 
 @pytest.fixture
 def data_dir(tmp_path, monkeypatch):
@@ -29,18 +27,23 @@ def scanned_pdf(tmp_path):
     return path
 
 
-def write_text_pdf(path, pages):
-    """A typed PDF with real text on every page, like a digital book. Written by hand: no extra library."""
-    objects = [b"<< /Type /Catalog /Pages 2 0 R >>", b"",
-               b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+def write_pdf(path, pages, fonts=("Helvetica",), mediabox=(0, 0, 595, 842)):
+    """A PDF written by hand, no extra library. `pages` holds one content stream per page, which names the fonts
+    /F1, /F2 ... in the order of `fonts`. Text uses Windows character codes, so curly quotes and apostrophes come
+    out as typed. Most PDFs' pages start at (0, 0), but not all: `mediabox` can move the page's corner."""
+    objects = [b"<< /Type /Catalog /Pages 2 0 R >>", b""]
+    objects += [b"<< /Type /Font /Subtype /Type1 /BaseFont /%s /Encoding /WinAnsiEncoding >>" % font.encode()
+                for font in fonts]
+    font_names = b" ".join(b"/F%d %d 0 R" % (n, n + 2) for n in range(1, len(fonts) + 1))
     kids = []
-    for i in range(pages):
-        text = f"BT /F1 12 Tf 72 720 Td (Page {i + 1}: a linked list keeps each value in its own node.) Tj ET".encode()
-        objects.append(b"<< /Length %d >>\nstream\n" % len(text) + text + b"\nendstream")
-        objects.append(b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents %d 0 R "
-                       b"/Resources << /Font << /F1 3 0 R >> >> >>" % len(objects))
+    for content in pages:
+        stream = content.encode("cp1252")
+        objects.append(b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream")
+        objects.append(b"<< /Type /Page /Parent 2 0 R /MediaBox [%s] /Contents %d 0 R "
+                       b"/Resources << /Font << %s >> >> >>"
+                       % (" ".join(map(str, mediabox)).encode(), len(objects), font_names))
         kids.append(b"%d 0 R" % len(objects))
-    objects[1] = b"<< /Type /Pages /Kids [" + b" ".join(kids) + b"] /Count %d >>" % pages
+    objects[1] = b"<< /Type /Pages /Kids [" + b" ".join(kids) + b"] /Count %d >>" % len(pages)
     out = bytearray(b"%PDF-1.4\n")
     offsets = []
     for number, body in enumerate(objects, start=1):
@@ -52,6 +55,12 @@ def write_text_pdf(path, pages):
     out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, xref_at)
     path.write_bytes(bytes(out))
     return path
+
+
+def write_text_pdf(path, pages):
+    """A typed PDF with real text on every page, like a digital book."""
+    line = "Page {}: a linked list keeps each value in its own node."
+    return write_pdf(path, [f"BT /F1 12 Tf 72 720 Td ({line.format(i + 1)}) Tj ET" for i in range(pages)])
 
 
 @pytest.fixture
@@ -74,6 +83,37 @@ def make_pdf(tmp_path):
         mixed.close()
         typed.close()
         return out
+    return make
+
+
+def _pdf_string(text):
+    """PDF text is written inside (brackets), so brackets and backslashes in it need a backslash first."""
+    return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+@pytest.fixture
+def listing_pdf(tmp_path):
+    """listing_pdf(lines, by_position=False, corner=(0, 0)): one page like a C++ book: a sentence in Times-Roman,
+    `lines` as a code listing in Courier 9 pt (every character exactly 5.4 points wide), then another sentence.
+    Indentation is typed as spaces, or by_position: the line simply starts further right, as many books do it.
+    `corner` is where the page starts in PDF points; one of our real books starts at (54, 55).
+    Returns (path, box): the listing's box in points from the page's corner, as Docling's default reader reports it."""
+    def make(lines, by_position=False, corner=(0, 0)):
+        top, step = 700.0, 11.5                                  # first line's baseline; distance between lines
+        bottom = top - (len(lines) - 1) * step
+        rows = [(72.0, top + 30, "/F2 10", "MULTSHAP draws three shapes:")]       # F1: Courier, F2: Times-Roman
+        for n, line in enumerate(lines):
+            indent = len(line) - len(line.lstrip(" ")) if by_position else 0
+            rows.append((72.0 + indent * 5.4, top - n * step, "/F1 9", line[indent:]))
+        rows.append((72.0, bottom - 30, "/F2 10", "Because push_front only creates one node, it is fast."))
+        dx, dy = corner
+        content = "\n".join(f"BT {font} Tf {x + dx} {y + dy} Td ({_pdf_string(text)}) Tj ET"
+                            for x, y, font, text in rows if text)
+        path = write_pdf(tmp_path / "listing.pdf", [content], fonts=("Courier", "Times-Roman"),
+                         mediabox=(dx, dy, dx + 595, dy + 842))
+        box = BoundingBox(l=71, r=73 + max(map(len, lines)) * 5.4, t=top + 8, b=bottom - 3,
+                          coord_origin=CoordOrigin.BOTTOMLEFT)
+        return path, box
     return make
 
 
