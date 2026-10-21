@@ -90,7 +90,10 @@ def cache_file(file_sha256: str, source_type: str) -> Path:
 
 def settings_fingerprint(source_type: str) -> str:
     """12 characters that change whenever docling-core or our settings for this format change."""
-    settings = pdf_options().model_dump(exclude={"accelerator_options"}) if source_type == "pdf" else {}
+        # serialize_as_any: Docling types some options as a base class (table_structure_options is one), and without it
+    # pydantic writes only the base class's fields: the table mode was left out of the name
+    settings = (pdf_options().model_dump(exclude={"accelerator_options"}, serialize_as_any=True)
+                if source_type == "pdf" else {})
     text = json.dumps([source_type, version("docling-core"), settings], sort_keys=True, default=_json_fallback)
     return hashlib.sha256(text.encode()).hexdigest()[:12]
 

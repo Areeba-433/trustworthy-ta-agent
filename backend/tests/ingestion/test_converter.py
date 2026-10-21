@@ -166,6 +166,21 @@ def test_the_cache_name_changes_when_our_settings_change(monkeypatch, data_dir):
     assert converter.cache_file("a" * 64, "docx") != converter.cache_file("a" * 64, "pptx")
 
 
+def test_the_cache_name_changes_with_the_table_mode(monkeypatch, data_dir):
+    """The mode sits in an option Docling types as a base class. It was once left out of the name, and a FAST
+    result was reused after the switch to ACCURATE."""
+    ours = converter.pdf_options
+    names = set()
+    for mode in (TableFormerMode.FAST, TableFormerMode.ACCURATE):
+        def options(mode=mode):
+            chosen = ours()
+            chosen.table_structure_options.mode = mode
+            return chosen
+        monkeypatch.setattr(converter, "pdf_options", options)
+        names.add(converter.cache_file("a" * 64, "pdf"))
+    assert len(names) == 2
+
+    
 def test_sets_are_sorted_before_hashing():
     assert converter._json_fallback(set("fbdaec")) == list("abcdef")
 
