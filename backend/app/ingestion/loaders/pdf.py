@@ -1,5 +1,5 @@
-"""PDF loader (owner: Minahil). Docling reads the book, to_blocks() makes blocks, restore_code_lines() gives code
-listings their lines back, the book rules come next."""
+"""PDF loader (owner: Minahil). Docling reads the book, remove_chapter_tabs() takes the decoration on the page edges
+out, to_blocks() makes blocks, restore_code_lines() gives code listings their lines back. The book rules come next."""
 from pathlib import Path
 
 from app.ingestion import messages
@@ -9,6 +9,7 @@ from app.ingestion.converter import PARSER, PARSER_VERSION, convert
 from app.ingestion.docling_blocks import to_blocks
 from app.ingestion.documents import parsed_document
 from app.ingestion.pdf_code import restore_code_lines
+from app.ingestion.pdf_furniture import remove_chapter_tabs
 from app.ingestion.registry import register
 from app.ingestion.storage import Timer
 
@@ -21,6 +22,8 @@ def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
     if conversion.from_cache:              # say so, or a cached run looks like a very fast Docling
         timer.seconds["docling_cache"] = timer.seconds.pop("docling")
     title = title_from_filename(meta.file_name)
+    with timer("chapter_tabs"):
+        remove_chapter_tabs(conversion.document, path)
     with timer("blocks"):
         blocks = to_blocks(conversion.document, "pdf", title)
     with timer("code_lines"):

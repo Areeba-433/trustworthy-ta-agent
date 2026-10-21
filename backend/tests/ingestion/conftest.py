@@ -118,6 +118,24 @@ def listing_pdf(tmp_path):
 
 
 @pytest.fixture
+def make_chapter_tab_pdf(tmp_path):
+    """make_chapter_tab_pdf(title="INHERITANCE", x=560): a two-page book. Page 1 has a chapter tab on its right
+    edge, like the OOP book's odd pages: the title turned on its side and the chapter's number "9" upright above
+    it. Page 2 has none. A smaller x puts the turned text inside the page, like a label in a diagram."""
+    def make(title="INHERITANCE", x=560):
+        text = "BT /F1 11 Tf 72 700 Td (Inheritance lets a class reuse another class.) Tj ET"
+        tab = (f"BT /F1 12 Tf 0 1 -1 0 {x} 380 Tm ({title}) Tj ET\n"         # turned: reads bottom to top
+               f"BT /F1 14 Tf {x - 12} 470 Td (9) Tj ET")
+        return write_pdf(tmp_path / "chapter.pdf", [text + "\n" + tab, text])
+    return make
+
+
+@pytest.fixture
+def chapter_tab_pdf(make_chapter_tab_pdf):
+    return make_chapter_tab_pdf()
+
+
+@pytest.fixture
 def word_tokens(monkeypatch):
     """count_tokens() counts one token per word: no tokenizer download, and every size is easy to read."""
     class _WordTokenizer:
