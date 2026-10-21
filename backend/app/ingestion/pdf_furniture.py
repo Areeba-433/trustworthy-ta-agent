@@ -2,13 +2,15 @@
 
 Many textbooks print a tab on the outer edge of their pages: the chapter's number and title, turned on its side
 ("9 INHERITANCE"). Docling does not know it is decoration, so it turns up as a paragraph of its own, as an extra
-last column of a table printed next to it, or at the end of a code listing. In our OOP book that is 462 pages.
+last column of a table printed next to it, at the end of the cells of a table's last column, or at the end of a
+code listing. In our OOP book that is 462 pages.
 
 pdfium finds the tab: its letters are rotated and stand in the outer 15% of the page. The chapter's number or
 letter is upright, just above or below them (on the OOP book's pages about 5 to 18 points). Then, in Docling's
 result:
 - an item made only of the tab's letters moves to the furniture layer (to_blocks() skips it, like page numbers);
 - a table column made only of them is removed;
+- cells of a table's last column that end with them, after their own text, lose them;
 - a code listing that ends with them loses them.
 
 Words are compared by their letters, not by their spelling: the tab is set in small capitals, and pdfium reads
@@ -53,6 +55,7 @@ def remove_chapter_tabs(doc: DoclingDocument, path: Path) -> int:
         tab = tabs.get(table.prov[0].page_no) if table.prov else None
         if tab is not None:
             changed += _remove_tab_columns(table, tab)
+            changed += _remove_tab_words_in_cells(table, tab)
     logger.info("chapter tabs on %d pages, %d items changed", len(tabs), changed)
     return changed
 
@@ -139,6 +142,33 @@ def _remove_tab_columns(table: TableItem, tab: Counter) -> int:
             table.data = _without_column(table.data, col)
             removed += 1
     return removed
+
+
+def _remove_tab_words_in_cells(table: TableItem, tab: Counter) -> int:
+    """Take the tab's words off the end of the cells in the table's last column, the column next to the tab.
+    Book page 925: Docling wrote "first, n, gen F" and "first, last, value STL AND". Only when the words taken hold
+    at least half of the tab's letters together, and each of the tab's letters is taken once. A cell keeps at least
+    its first word: a cell made only of capitals can be real data, like the letter C in an ASCII table.
+    Returns how many cells changed."""
+    cells = list(table.data.table_cells)
+    last = [i for i, c in enumerate(cells) if c.end_col_offset_idx == table.data.num_cols and not c.column_header]
+    left = tab.copy()                                     # the tab's letters not yet found
+    kept: dict[int, str] = {}                             # cell -> its text without the tab's words
+    for i in last:                                        # Docling lists cells row by row, top to bottom
+        text = cells[i].text.rstrip()
+        words = text.split()
+        while len(words) > 1 and _looks_like_tab(words[-1:]) and not (_letters(words[-1]) - left):
+            left -= _letters(words[-1])
+            text = text[:len(text) - len(words.pop())].rstrip()
+        if text != cells[i].text.rstrip():
+            kept[i] = text
+    found = sum(tab.values()) - sum(left.values())
+    if not kept or found * 2 < sum(tab.values()):
+        return 0
+    for i, text in kept.items():
+        cells[i] = cells[i].model_copy(update={"text": text})
+    table.data = table.data.model_copy(update={"table_cells": cells})
+    return len(kept)
 
 
 def _without_column(data: TableData, col: int) -> TableData:

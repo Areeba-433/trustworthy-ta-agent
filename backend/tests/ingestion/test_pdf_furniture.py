@@ -91,6 +91,55 @@ def test_a_real_last_column_stays(chapter_tab_pdf):
     assert remove_chapter_tabs(doc, chapter_tab_pdf) == 0
 
 
+def _two_columns(*rows: tuple[str, str], last_header: str = "Arguments") -> DoclingDocument:
+    cells = [_cell("Name", 0, 0, header=True), _cell(last_header, 0, 1, header=True)]
+    for n, (name, last) in enumerate(rows, start=1):
+        cells += [_cell(name, n, 0), _cell(last, n, 1)]
+    doc = DoclingDocument(name="b")
+    doc.add_table(data=TableData(num_rows=len(rows) + 1, num_cols=2, table_cells=cells), prov=_prov(1))
+    return doc
+
+
+def _column(doc: DoclingDocument, col: int) -> list[str]:
+    cells = sorted(doc.tables[0].data.table_cells, key=lambda c: c.start_row_offset_idx)
+    return [c.text for c in cells if c.start_col_offset_idx == col and not c.column_header]
+
+
+def test_the_tab_at_the_end_of_cells_in_the_last_column_is_taken_off(chapter_tab_pdf):
+    """Book page 925 in ACCURATE mode: the tab's words went to the end of the Arguments cells, spread over rows
+    ("first, n, gen F", "first, last, value STL AND"). The other columns are not the tab's neighbours."""
+    doc = _two_columns(("generate_n INHERITANCE", "first, n, gen 9"), ("remove", "first, last, value INHERITANCE"))
+    assert remove_chapter_tabs(doc, chapter_tab_pdf) == 2
+    assert _column(doc, 1) == ["first, n, gen", "first, last, value"]
+    assert _column(doc, 0) == ["generate_n INHERITANCE", "remove"]
+
+
+def test_a_few_capitals_at_the_end_of_a_cell_are_not_the_tab(chapter_tab_pdf):
+    """ "TEN" is made of the tab's letters, but a quarter of them is not the tab."""
+    doc = _two_columns(("fill_n", "first, last, TEN"))
+    assert remove_chapter_tabs(doc, chapter_tab_pdf) == 0
+    assert _column(doc, 1) == ["first, last, TEN"]
+
+
+def test_a_cell_made_only_of_capitals_is_never_cut(chapter_tab_pdf):
+    """Like the Symbol column of an ASCII table: "C" is data. The column has a header, so it is no tab column."""
+    doc = _two_columns(("67", "INHERITANCE"), ("57", "9"), last_header="Symbol")
+    assert remove_chapter_tabs(doc, chapter_tab_pdf) == 0
+    assert _column(doc, 1) == ["INHERITANCE", "9"]
+
+
+def test_with_a_tab_in_ordinary_letters_the_end_of_a_cell_stays(make_chapter_tab_pdf):
+    """As with headings: only words in capitals are taken for the tab."""
+    doc = _two_columns(("sort", "first, last 9 Inheritance"))
+    assert remove_chapter_tabs(doc, make_chapter_tab_pdf("Inheritance")) == 0
+
+
+def test_each_of_the_tab_s_letters_is_taken_from_the_cells_once(chapter_tab_pdf):
+    doc = _two_columns(("sort", "first, last 9 INHERITANCE"), ("stable_sort", "first, last INHERITANCE"))
+    assert remove_chapter_tabs(doc, chapter_tab_pdf) == 1
+    assert _column(doc, 1) == ["first, last", "first, last INHERITANCE"]
+
+
 def test_the_pdf_loader_leaves_the_tab_out(chapter_tab_pdf, monkeypatch, data_dir):
     def docling_with_the_tab(path, source_type, file_sha256=None):
         doc = DoclingDocument(name="chapter")
