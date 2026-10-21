@@ -40,8 +40,9 @@ def to_blocks(doc: DoclingDocument, source_type: SourceType, title: str) -> list
     blocks: list[Block] = []
     headings: list[tuple[int, str]] = []         # (depth, text) of the headings above the current item
     previous = Location()
+    table_captions = {ref.cref for table in doc.tables for ref in table.captions}   # already in the table's text
     for item, _ in doc.iterate_items(traverse_pictures=True, included_content_layers=_LAYERS):
-        if not isinstance(item, DocItem) or item.label not in _KIND_BY_LABEL:
+        if not isinstance(item, DocItem) or item.label not in _KIND_BY_LABEL or item.self_ref in table_captions:
             continue
         ancestors = list(_ancestors(item, doc))
         if any(isinstance(a, GroupItem) and a.label == GroupLabel.COMMENT_SECTION for a in ancestors):
@@ -82,7 +83,7 @@ def _kind(item: DocItem, ancestors: list[NodeItem]) -> BlockKind:
 
 def _text(item: DocItem, kind: BlockKind, doc: DoclingDocument) -> str:
     if isinstance(item, TableItem):
-        return item.export_to_markdown(doc=doc).strip()
+        return _table_text(item, doc)
     raw: str = getattr(item, "text", "") or ""
     if kind in _VERBATIM:
         return raw.strip("\n") if raw.strip() else ""             # keep indentation and line breaks
@@ -91,6 +92,19 @@ def _text(item: DocItem, kind: BlockKind, doc: DoclingDocument) -> str:
         marker = item.marker if item.enumerated and item.marker else "-"
         text = f"{marker} {text}"
     return text
+
+
+def _table_text(table: TableItem, doc: DoclingDocument) -> str:
+    """The table as Markdown, with its caption on top, as Docling writes it, with two changes:
+    - a row across the whole table (a section title like "Mutating Sequence Operations") is written once, in its
+      first column: Markdown cannot join cells, so Docling would repeat it in every column;
+    - a | inside a cell is written \\| (Markdown's own way) instead of the HTML code &#124;, so "||" stays readable.
+    Header cells that span columns are still repeated: there the words belong to every column below them."""
+    cells = [cell.model_copy(update={"end_col_offset_idx": cell.start_col_offset_idx + 1, "col_span": 1})
+             if cell.end_col_offset_idx - cell.start_col_offset_idx > 1 and not cell.column_header else cell
+             for cell in table.data.table_cells]
+    once = table.model_copy(update={"data": table.data.model_copy(update={"table_cells": cells})})
+    return once.export_to_markdown(doc=doc).replace("&#124;", "\\|").strip()
 
 
 def _location(item: DocItem, source_type: SourceType, previous: Location) -> Location:

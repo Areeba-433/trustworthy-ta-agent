@@ -49,14 +49,15 @@ def _pack(parts: list[str], joiner: str, limit: int, count: TokenCounter) -> lis
 
 
 def _split_table(text: str, limit: int, count: TokenCounter) -> list[str]:
-    """Cut between rows; every piece repeats the header, so each one still reads as a table."""
+    """Cut between rows; every piece repeats the caption and the header, so each one still reads as a table."""
     lines = text.split("\n")
-    if len(lines) < 3 or not _TABLE_RULE.match(lines[1]):
+    rule = next((i for i, line in enumerate(lines) if i and _TABLE_RULE.match(line)), None)
+    if rule is None or rule + 1 >= len(lines):
         return _split(text, _LINES, limit, count)        # not a Markdown table: cut between lines
-    header = lines[:2]
+    header = lines[:rule + 1]                            # the caption (if any), the header row, the |---| line
     pieces: list[str] = []
     rows: list[str] = []
-    for row in lines[2:]:
+    for row in lines[rule + 1:]:
         if rows and count("\n".join(header + rows + [row])) > limit:
             pieces.append("\n".join(header + rows))
             rows = []

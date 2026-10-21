@@ -154,6 +154,15 @@ def test_a_long_table_is_cut_between_rows_and_every_piece_keeps_the_header():
     assert [row for d in drafts for row in d.text.split("\n")[2:]] == rows
 
 
+def test_a_long_table_with_its_caption_on_top_keeps_caption_and_header_in_every_piece():
+    header = ["TABLE F.1 Algorithms", "", "| Operation | Cost |", "|---|---|"]
+    rows = [f"| insert value {i} at the head of the list | O(1) |" for i in range(80)]
+    drafts = _chunk(_doc({"kind": "table", "text": "\n".join(header + rows), "path": ["Costs"]}))
+    assert len(drafts) > 1
+    assert all(d.text.split("\n")[:4] == header for d in drafts)
+    assert [row for d in drafts for row in d.text.split("\n")[4:]] == rows
+
+
 def test_one_word_longer_than_the_limit_is_cut_by_characters():
     pieces = split_to_fit("x" * 1000, "paragraph", 300, len)        # here a "token" is one character
     assert all(len(p) <= 300 for p in pieces) and "".join(pieces) == "x" * 1000
