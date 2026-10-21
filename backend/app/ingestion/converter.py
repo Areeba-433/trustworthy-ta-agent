@@ -37,7 +37,8 @@ def pdf_options() -> PdfPipelineOptions:
     return PdfPipelineOptions(
         do_ocr=False,                      # digital files only (the pre-check refuses scans); OCR is the slowest
         do_table_structure=True,
-        table_structure_options=TableStructureOptions(mode=TableFormerMode.FAST),
+                   # ACCURATE: on the OOP book's hardest tables it fixed most wrong cells (docs/ingestion/pdf-table-mode.md)
+        table_structure_options=TableStructureOptions(mode=TableFormerMode.ACCURATE),
         heading_hierarchy_options=HeadingHierarchyOptions(enabled=True),   # levels from bookmarks and "5.3"
         do_code_enrichment=False,          # an extra model per code block: only if listings lose structure
         do_formula_enrichment=False,       # slow, and O(n log n) in a digital book is plain text already

@@ -25,7 +25,7 @@ from app.ingestion.storage import file_sha256
 def test_pdf_settings_match_the_plan():
     options = converter.pdf_options()
     assert options.do_ocr is False
-    assert options.do_table_structure and options.table_structure_options.mode == TableFormerMode.FAST
+    assert options.do_table_structure and options.table_structure_options.mode == TableFormerMode.ACCURATE
     assert options.heading_hierarchy_options.enabled
     assert not (options.do_code_enrichment or options.do_formula_enrichment)
     assert not (options.generate_page_images or options.generate_picture_images)
