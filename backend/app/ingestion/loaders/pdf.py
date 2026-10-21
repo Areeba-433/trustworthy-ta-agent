@@ -1,5 +1,6 @@
 """PDF loader (owner: Minahil). Docling reads the book, remove_chapter_tabs() takes the decoration on the page edges
-out, to_blocks() makes blocks, restore_code_lines() gives code listings their lines back. The book rules come next."""
+out, to_blocks() makes blocks, restore_code_lines() gives code listings their lines back and mark_figures() notes
+where each figure is, so an answer can show it. The book rules come next."""
 from pathlib import Path
 
 from app.ingestion import messages
@@ -9,6 +10,7 @@ from app.ingestion.converter import PARSER, PARSER_VERSION, convert
 from app.ingestion.docling_blocks import to_blocks
 from app.ingestion.documents import parsed_document
 from app.ingestion.pdf_code import restore_code_lines
+from app.ingestion.pdf_figures import mark_figures
 from app.ingestion.pdf_furniture import remove_chapter_tabs
 from app.ingestion.registry import register
 from app.ingestion.storage import Timer
@@ -28,6 +30,8 @@ def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
         blocks = to_blocks(conversion.document, "pdf", title)
     with timer("code_lines"):
         blocks = restore_code_lines(blocks, conversion.document, path)
+    with timer("figures"):
+        blocks = mark_figures(blocks, conversion.document)
     problems, notes = page_findings(meta.precheck)
     doc = parsed_document(
         meta, title=title, blocks=blocks, parser=PARSER, parser_version=PARSER_VERSION,

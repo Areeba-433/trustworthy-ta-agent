@@ -136,6 +136,18 @@ def chapter_tab_pdf(make_chapter_tab_pdf):
 
 
 @pytest.fixture
+def figure_pdf(tmp_path):
+    """figure_pdf(corner=(0, 0)): one page with a black rectangle where a figure would be: 300 x 200 points, its
+    bottom-left corner 100 points from the page's left edge and 300 from its bottom. `corner` moves the page's own
+    corner, like the OOP book whose pages start at (54, 55)."""
+    def make(corner=(0, 0)):
+        dx, dy = corner
+        drawing = f"0 0 0 rg {100 + dx} {300 + dy} 300 200 re f"
+        return write_pdf(tmp_path / "figure.pdf", [drawing], mediabox=(dx, dy, dx + 595, dy + 842))
+    return make
+
+
+@pytest.fixture
 def word_tokens(monkeypatch):
     """count_tokens() counts one token per word: no tokenizer download, and every size is easy to read."""
     class _WordTokenizer:
