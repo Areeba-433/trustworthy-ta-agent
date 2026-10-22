@@ -5,13 +5,33 @@ exactly the case it is about. Part 2 runs real Docling on a deck generated here:
 Docling upgrade changes its output. Part 3 sends broken files through ingest_file(), the way an upload arrives.
 Every deck is generated in code with python-pptx: the repo is public, so no real course files.
 """
-from collections.abc import Callable
+import copy
+import hashlib
+import io
+import zipfile
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 import pytest
 from docling_core.types.doc import (BoundingBox, ContentLayer, DocItemLabel, DoclingDocument, GroupItem,
                                     GroupLabel, ProvenanceItem, Size)
+from lxml import etree
+from PIL import Image
+from pptx import Presentation
+from pptx.chart.data import CategoryChartData
+from pptx.enum.chart import XL_CHART_TYPE
+from pptx.enum.shapes import PP_PLACEHOLDER
+from pptx.opc.constants import CONTENT_TYPE as CT
+from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+from pptx.opc.package import Part
+from pptx.opc.packuri import PackURI
+from pptx.oxml.ns import qn
+from pptx.presentation import Presentation as Deck
+from pptx.slide import Slide
+from pptx.util import Inches
 
+from app.core.config import settings
 from app.ingestion import messages
 from app.ingestion.contract import ParsedDocument, PrecheckResult, ResourceMeta
 from app.ingestion.loaders.pptx import load
@@ -170,3 +190,288 @@ def test_a_partial_docling_result_is_degraded_and_its_problem_comes_first(load_s
     doc = load_slides(_Slides(2).text(1, "Some text.").picture(2), problems=(messages.PARTIAL,))
     assert doc.quality.status == "degraded"
     assert doc.quality.warnings == [messages.PARTIAL, messages.no_text_units("Slides", [2])]
+
+
+# ================================================================ part 2: real Docling on a generated deck
+
+LAYOUT = {"title": 0, "content": 1, "title_only": 5, "blank": 6}     # python-pptx's default template
+SLIDES_IN_LECTURE = 11
+
+# PowerPoint keeps comments in their own XML parts, linked from the slide. python-pptx has no API for them, so these
+# helpers write the parts and link them with relate_to(). Office 365 writes "modern" comments; older PowerPoint
+# writes "legacy" ones. Docling 2.134.0 reads legacy comments (into a comment section) and ignores modern ones.
+P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
+P188_NS = "http://schemas.microsoft.com/office/powerpoint/2018/8/main"
+A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+PC_NS = "http://schemas.microsoft.com/office/powerpoint/2013/main/command"
+XML_HEAD = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+AUTHOR_ID = "{2C5A9C2B-7A3D-4C1E-9F00-000000000001}"
+MODERN_COMMENTS = ("application/vnd.ms-powerpoint.comments+xml",
+                   "http://schemas.microsoft.com/office/2018/10/relationships/comments")
+MODERN_AUTHORS = ("application/vnd.ms-powerpoint.authors+xml",
+                  "http://schemas.microsoft.com/office/2018/10/relationships/authors")
+MODERN_COMMENT_EXT = "{6950BFC3-D8DA-4A85-94F7-54DA5524770B}"   # the slide's own pointer to its modern comments
+
+
+def _add_part(deck: Deck, owner: Part, name: str, kind: tuple[str, str], xml: str) -> str:
+    """Add an XML part to the file and link it from `owner` (a slide or the presentation). Returns the link id."""
+    content_type, relationship = kind
+    part = Part(PackURI(name), content_type, deck.part.package, xml.encode())
+    return owner.relate_to(part, relationship)
+
+
+def _legacy_comment(deck: Deck, slide: Slide, text: str) -> None:
+    _add_part(deck, deck.part, "/ppt/commentAuthors.xml", (CT.PML_COMMENT_AUTHORS, RT.COMMENT_AUTHORS),
+              f'{XML_HEAD}<p:cmAuthorLst xmlns:p="{P_NS}"><p:cmAuthor id="0" name="Reviewer" initials="R" '
+              f'lastIdx="1" clrIdx="0"/></p:cmAuthorLst>')
+    _add_part(deck, slide.part, "/ppt/comments/comment1.xml", (CT.PML_COMMENTS, RT.COMMENTS),
+              f'{XML_HEAD}<p:cmLst xmlns:p="{P_NS}"><p:cm authorId="0" dt="2026-10-01T10:00:00.000" idx="1">'
+              f'<p:pos x="10" y="10"/><p:text>{escape(text)}</p:text></p:cm></p:cmLst>')
+
+
+def _modern_comment(deck: Deck, slide: Slide, text: str) -> None:
+    _add_part(deck, deck.part, "/ppt/authors.xml", MODERN_AUTHORS,
+              f'{XML_HEAD}<p188:authorLst xmlns:p188="{P188_NS}"><p188:author id="{AUTHOR_ID}" name="Reviewer" '
+              f'initials="R" userId="Reviewer" providerId="None"/></p188:authorLst>')
+    link = _add_part(
+        deck, slide.part, "/ppt/comments/modernComment_1.xml", MODERN_COMMENTS,
+        f'{XML_HEAD}<p188:cmLst xmlns:a="{A_NS}" xmlns:r="{R_NS}" xmlns:p188="{P188_NS}">'
+        f'<p188:cm id="{{8A2B6C1D-0000-4000-8000-000000000002}}" authorId="{AUTHOR_ID}" '
+        f'created="2026-10-01T10:00:00.000"><pc:sldMkLst xmlns:pc="{PC_NS}"><pc:docMk/>'
+        f'<pc:sldMk cId="0" sldId="{slide.slide_id}"/></pc:sldMkLst><p188:txBody><a:bodyPr/><a:lstStyle/>'
+        f'<a:p><a:r><a:t>{escape(text)}</a:t></a:r></a:p></p188:txBody></p188:cm></p188:cmLst>')
+    ext = etree.SubElement(etree.SubElement(slide._element, qn("p:extLst")), qn("p:ext"), uri=MODERN_COMMENT_EXT)
+    etree.SubElement(ext, f"{{{P188_NS}}}commentRel", nsmap={"p188": P188_NS}).set(qn("r:id"), link)
+
+
+def _footer(slide: Slide, number: int) -> None:
+    """Copy the layout's footer and slide-number placeholders onto the slide and fill them, as PowerPoint does."""
+    for placeholder in slide.slide_layout.placeholders:
+        kind = placeholder.placeholder_format.type
+        if kind not in (PP_PLACEHOLDER.FOOTER, PP_PLACEHOLDER.SLIDE_NUMBER):
+            continue
+        element = copy.deepcopy(placeholder._element)
+        slide.shapes._spTree.append(element)
+        if kind == PP_PLACEHOLDER.SLIDE_NUMBER:
+            for field_text in element.iter(qn("a:t")):
+                field_text.text = str(number)          # PowerPoint saves the real number inside the field
+        else:
+            body = element.find(qn("p:txBody"))
+            for paragraph in body.findall(qn("a:p")):
+                body.remove(paragraph)
+            run = etree.SubElement(etree.SubElement(body, qn("a:p")), qn("a:r"))
+            etree.SubElement(run, qn("a:t")).text = FOOTER
+
+
+def _png() -> io.BytesIO:
+    buffer = io.BytesIO()
+    Image.new("RGB", (120, 80), "white").save(buffer, "PNG")
+    buffer.seek(0)
+    return buffer
+
+
+def _box(slide: Slide, lines: list[str], top: float, left: float = 1, font: str | None = None) -> None:
+    frame = slide.shapes.add_textbox(Inches(left), Inches(top), Inches(4), Inches(1)).text_frame
+    for i, line in enumerate(lines):
+        paragraph = frame.paragraphs[0] if i == 0 else frame.add_paragraph()
+        paragraph.text = line
+        for run in paragraph.runs:
+            if font is not None:
+                run.font.name = font
+
+
+def _write_lecture(path: Path) -> Path:
+    """Eleven slides, one case per slide; the expected blocks are listed in the first test of this part."""
+    deck = Presentation()
+
+    def slide(layout: str) -> Slide:
+        return deck.slides.add_slide(deck.slide_layouts[LAYOUT[layout]])
+
+    cover = slide("title")                                         # 1: titled with the deck's own name
+    cover.shapes.title.text = "Stacks"
+    cover.placeholders[1].text = "Lecture 4"
+    cover.notes_slide.notes_text_frame.text = "Welcome everyone."
+    _legacy_comment(deck, cover, "Reviewer: fix the cover")
+    bullets = slide("content")                                     # 2: bullets, notes, a modern comment, footer
+    bullets.shapes.title.text = "Push and pop"
+    frame = bullets.placeholders[1].text_frame
+    frame.text = "Push adds on top"
+    second = frame.add_paragraph()
+    second.text, second.level = "Pop removes the top", 1
+    bullets.notes_slide.notes_text_frame.text = "Mention the call stack."
+    _modern_comment(deck, bullets, "Reviewer: tighten this")
+    _footer(bullets, 2)
+    slide("blank")                                                 # 3: empty
+    slide("blank").notes_slide.notes_text_frame.text = "Draw the stack on the board."   # 4: notes only
+    untitled = slide("blank")                                      # 5: no title
+    _box(untitled, ["A slide without a title."], top=2)
+    _footer(untitled, 5)
+    costs = slide("title_only")                                    # 6: a table
+    costs.shapes.title.text = "Costs"
+    table = costs.shapes.add_table(3, 2, Inches(1), Inches(2), Inches(6), Inches(2)).table
+    for row, cells in enumerate([("Operation", "Cost"), ("push", "O(1)"), ("search", "O(n)")]):
+        for col, text in enumerate(cells):
+            table.cell(row, col).text = text
+    _footer(costs, 6)
+    figure = slide("title_only")                                   # 7: picture, grouped shapes, chart
+    figure.shapes.title.text = "Diagram"
+    figure.shapes.add_picture(_png(), Inches(1), Inches(2))
+    group = figure.shapes.add_group_shape()
+    for i, text in enumerate(["head node", "next pointer"]):
+        group.shapes.add_textbox(Inches(4), Inches(2 + i), Inches(2), Inches(1)).text_frame.text = text
+    chart = CategoryChartData()
+    chart.categories = ["push calls", "pop calls"]
+    chart.add_series("calls per test", (3, 1))
+    figure.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(6), Inches(4), Inches(3), Inches(2), chart)
+    _footer(figure, 7)
+    recap = slide("content")                                       # 8: a later slide titled like the deck
+    recap.shapes.title.text = "STACKS"
+    recap.placeholders[1].text = "Recap of the lecture"
+    _footer(recap, 8)
+    hidden = slide("content")                                      # 9: hidden
+    hidden.shapes.title.text = "Hidden extra"
+    hidden.placeholders[1].text = "Only shown on request"
+    hidden._element.set("show", "0")
+    code = slide("title_only")                                     # 10: C++ in a monospace text box
+    code.shapes.title.text = "Code"
+    _box(code, ["// sum an array", "for (int i = 0; i < n; i++)", "    sum += a[i];"], top=2, font="Courier New")
+    _footer(code, 10)
+    slide("blank").shapes.add_picture(_png(), Inches(1), Inches(1))  # 11: a picture and nothing else
+    deck.save(str(path))
+    return path
+
+
+@pytest.fixture(scope="module")
+def module_data_dir(tmp_path_factory) -> Iterator[Path]:
+    """One empty data folder for this part, so Docling's cache never touches the real data/ folder."""
+    folder = tmp_path_factory.mktemp("data")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(settings, "INGESTION_DATA_DIR", str(folder))
+        yield folder
+
+
+@pytest.fixture(scope="module")
+def lecture_file(tmp_path_factory) -> Path:
+    return _write_lecture(tmp_path_factory.mktemp("deck") / FILE_NAME)
+
+
+def _meta_for(path: Path) -> ResourceMeta:
+    return _meta(path.name, hashlib.sha256(path.read_bytes()).hexdigest())   # the real hash: the cache key
+
+
+@pytest.fixture(scope="module")
+def lecture(module_data_dir, lecture_file) -> ParsedDocument:
+    """The generated deck, read by real Docling once for every test in this part."""
+    return load(lecture_file, _meta_for(lecture_file))
+
+
+def _on(doc: ParsedDocument, slide: int) -> list[str]:
+    return [b.text for b in doc.blocks if b.loc.slide == slide]
+
+
+def _table_cells(markdown: str) -> list[list[str]]:
+    """A Markdown table's cells, row by row, without the |---| line: spacing may change between versions."""
+    lines = [line for line in markdown.splitlines() if set(line) - set("|-: ")]
+    return [[cell.strip() for cell in line.strip().strip("|").split("|")] for line in lines]
+
+
+def test_real_docling_gives_these_blocks_in_reading_order(lecture):
+    rows = _rows(lecture)
+    table = next(text for kind, text, _ in rows if kind == "table")
+    assert rows == [
+        ("paragraph", "Lecture 4", 1),
+        ("slide_notes", "Welcome everyone.", 1),
+        ("heading", "Push and pop", 2),
+        ("list_item", "- Push adds on top", 2),
+        ("list_item", "- Pop removes the top", 2),
+        ("slide_notes", "Mention the call stack.", 2),
+        ("slide_notes", "Draw the stack on the board.", 4),
+        ("paragraph", "A slide without a title.", 5),
+        ("heading", "Costs", 6),
+        ("table", table, 6),
+        ("heading", "Diagram", 7),
+        ("paragraph", "head node", 7),
+        ("paragraph", "next pointer", 7),
+        ("list_item", "- Recap of the lecture", 8),
+        ("heading", "Hidden extra", 9),
+        ("list_item", "- Only shown on request", 9),
+        ("heading", "Code", 10),
+        ("paragraph", "// sum an array", 10),
+        ("paragraph", "for (int i = 0; i < n; i++)", 10),
+        ("paragraph", "sum += a[i];", 10),
+    ]
+    assert _table_cells(table) == [["Operation", "Cost"], ["push", "O(1)"], ["search", "O(n)"]]
+
+
+def test_every_block_cites_a_slide_of_the_deck(lecture):
+    slides = [b.loc.slide for b in lecture.blocks]
+    assert all(s is not None and 1 <= s <= SLIDES_IN_LECTURE for s in slides)
+    assert slides == sorted(slides)                              # never back to an earlier slide
+
+
+def test_seq_counts_up_without_gaps(lecture):
+    assert [b.seq for b in lecture.blocks] == list(range(len(lecture.blocks)))
+
+
+def test_every_heading_path_starts_with_the_title_from_the_file_name(lecture):
+    assert lecture.title == TITLE
+    assert all(b.heading_path[0] == TITLE for b in lecture.blocks)
+
+
+def test_speaker_notes_stay_with_their_own_slide(lecture):
+    assert [(b.text, b.loc.slide) for b in lecture.blocks if b.kind == "slide_notes"] == [
+        ("Welcome everyone.", 1), ("Mention the call stack.", 2), ("Draw the stack on the board.", 4),
+    ]
+
+
+@pytest.mark.parametrize(("part", "words"), [
+    pytest.param("ppt/comments/comment1.xml", "fix the cover", id="legacy comment"),
+    pytest.param("ppt/comments/modernComment_1.xml", "tighten this", id="modern comment"),
+])
+def test_reviewers_comments_never_become_content(lecture, lecture_file, part, words):
+    with zipfile.ZipFile(lecture_file) as archive:
+        assert words in archive.read(part).decode()               # the comment really is in the file
+    assert not any(words in b.text for b in lecture.blocks)
+
+
+def test_footers_and_slide_numbers_never_become_content(lecture):
+    assert not any(FOOTER in b.text or b.text.isdigit() for b in lecture.blocks)
+
+
+@pytest.mark.parametrize("slide", [4, 5, 8], ids=["notes only", "no title", "titled like the deck"])
+def test_a_slide_without_its_own_title_is_cited_under_the_deck_title_only(lecture, slide):
+    assert {tuple(b.heading_path) for b in lecture.blocks if b.loc.slide == slide} == {(TITLE,)}
+
+
+def test_empty_and_hidden_slides_keep_the_numbering(lecture):
+    assert lecture.quality.units_total == SLIDES_IN_LECTURE
+    assert _on(lecture, 3) == []                                  # empty: no blocks, and slide 4 is still slide 4
+    assert _on(lecture, 9) == ["Hidden extra", "- Only shown on request"]    # hidden slides are kept on purpose
+
+
+def test_figure_words_stay_paragraphs_and_chart_labels_are_not_read_yet(lecture):
+    assert not any(b.kind == "figure_text" for b in lecture.blocks)          # Docling puts no words in pictures
+    assert _on(lecture, 7) == ["Diagram", "head node", "next pointer"]
+    assert not any("calls" in b.text for b in lecture.blocks)    # known gap: asked to_blocks() to read chart data
+
+
+def test_code_lines_stay_in_order_but_lose_their_indent(lecture):
+    assert _on(lecture, 10)[1:] == ["// sum an array", "for (int i = 0; i < n; i++)", "sum += a[i];"]
+
+
+def test_a_picture_only_slide_is_named_in_the_warnings(lecture):
+    assert lecture.quality.status == "degraded"
+    assert lecture.quality.warnings == [messages.no_text_units("Slides", [11])]
+
+
+def test_the_result_passes_the_contract_check_the_dispatcher_runs(lecture):
+    assert ParsedDocument.model_validate(lecture.model_dump()) == lecture
+
+
+def test_loading_twice_gives_identical_output_even_from_the_cache(lecture, lecture_file):
+    from app.ingestion.converter import cache_file
+
+    meta = _meta_for(lecture_file)
+    assert cache_file(meta.file_sha256, "pptx").exists()         # the second load really reads the cache
+    assert load(lecture_file, meta).model_dump_json() == lecture.model_dump_json()
