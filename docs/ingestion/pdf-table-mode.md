@@ -43,8 +43,30 @@ cached by the file's hash and our settings. The cache name changed with this set
 
 ## Still wrong (known limits)
 
-- Book page 933: the code lines of `partial_sum` sit in the next row's Purpose.
-- Book page 937: `partial_sort` gets the Input "x" of `partial_sort_copy`.
+Since 22 Oct 2026 pdfium draws the pages the models look at, instead of docling-parse ([pdf-reader.md](pdf-reader.md)).
+Most tables came out the same; on three pages a borderline table changed for the worse (marked "since pdfium"):
+
+- Book page 922, since pdfium: the section row "Non-mutating Sequence Operations" is merged into the header (all its
+  words kept).
+- Book page 933, as before: the code lines of `partial_sum` sit in the next row's Purpose.
+- Book page 936, since pdfium: `random_shuffle` gets an extra "x" under Bidirectional; `partition` and
+  `stable_partition` are one row.
+- Book page 937, since pdfium: `partial_sort` has "x x" under Random Access and `partial_sort_copy` has no "x" at all
+  (before, only the Input "x" of `partial_sort_copy` was on `partial_sort`).
 - `set_symmetric_ difference x` on page 937 is a typo in the printed book, not an error of ours.
 
-ACCURATE can also add errors (page 937). Check tables again on the next books we get.
+ACCURATE can also add errors (page 937), and these tables turn with small changes in how a page is drawn. Check
+tables again on the next books we get.
+
+## Checked again: PDF pages 883-938 through the whole PDF loader
+
+Only tables changed; the text and the code listings came out the same. Besides the pages above:
+
+- Book page 886 (precedence table): the second line of a row ("Additive +, -" under Arithmetic) is now in the same
+  cell as the first line, instead of on a row with an empty first column. Same facts, and the row keeps its name.
+- Book page 910 (Console Graphics Lite constants): both tables right now. FAST had put "cBLACK" into the header and
+  split "Fill Constants" over two columns.
+- No chapter tab words are left in any cell.
+
+The first try reused FAST's cached result, because the cache name left the table mode out. That was fixed before
+this switch (`serialize_as_any` in `settings_fingerprint()`).
