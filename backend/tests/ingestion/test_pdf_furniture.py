@@ -61,6 +61,25 @@ def test_a_code_listing_loses_the_tab_at_its_end_and_nothing_else(chapter_tab_pd
     assert _texts(doc) == ["class laborer : public employee { };", "#define TITLE A"]
 
 
+def test_a_paragraph_that_ends_with_the_tab_loses_it_and_only_it(chapter_tab_pdf):
+    """Book page 887: the last keyword of a list, "this", came with the chapter tab glued on. A few capitals at the
+    end of a sentence are not the tab, even when they are made of its letters."""
+    doc = DoclingDocument(name="b")
+    doc.add_text(DocItemLabel.TEXT, "this 9 INHERITANCE", prov=_prov(1))
+    doc.add_text(DocItemLabel.TEXT, "Each node of a TREE", prov=_prov(1))
+    assert remove_chapter_tabs(doc, chapter_tab_pdf) == 1
+    assert _texts(doc) == ["this", "Each node of a TREE"]
+
+
+def test_a_heading_in_capitals_keeps_its_words_like_the_tab_s(chapter_tab_pdf):
+    """Some books print headings in capitals. In "MULTIPLE INHERITANCE" the tab's words cannot be told from the
+    heading's own, so the heading stays whole."""
+    doc = DoclingDocument(name="b")
+    doc.add_heading("MULTIPLE INHERITANCE", level=2, prov=_prov(1))
+    assert remove_chapter_tabs(doc, chapter_tab_pdf) == 0
+    assert _texts(doc) == ["MULTIPLE INHERITANCE"]
+
+
 def _cell(text: str, row: int, col: int, cols: int = 1, header: bool = False) -> TableCell:
     return TableCell(text=text, start_row_offset_idx=row, end_row_offset_idx=row + 1, start_col_offset_idx=col,
                      end_col_offset_idx=col + cols, col_span=cols, column_header=header)

@@ -3,7 +3,7 @@
 Many textbooks print a tab on the outer edge of their pages: the chapter's number and title, turned on its side
 ("9 INHERITANCE"). Docling does not know it is decoration, so it turns up as a paragraph of its own, as an extra
 last column of a table printed next to it, at the end of the cells of a table's last column, or at the end of a
-code listing. In our OOP book that is 462 pages.
+code listing or a paragraph. In our OOP book that is 462 pages.
 
 pdfium finds the tab: its letters are rotated and stand in the outer 15% of the page. The chapter's number or
 letter is upright, just above or below them (on the OOP book's pages about 5 to 18 points). Then, in Docling's
@@ -11,7 +11,7 @@ result:
 - an item made only of the tab's letters moves to the furniture layer (to_blocks() skips it, like page numbers);
 - a table column made only of them is removed;
 - cells of a table's last column that end with them, after their own text, lose them;
-- a code listing that ends with them loses them.
+- a code listing or a paragraph that ends with them loses them.
 
 Words are compared by their letters, not by their spelling: the tab is set in small capitals, and pdfium reads
 "LOOPS AND DECISIONS" as "L D OOPS AND ECISIONS".
@@ -43,13 +43,13 @@ def remove_chapter_tabs(doc: DoclingDocument, path: Path) -> int:
         tab = tabs.get(item.prov[0].page_no) if item.prov else None
         if tab is None or item.content_layer != ContentLayer.BODY:
             continue
-        if item.label == DocItemLabel.CODE:
-            kept = _without_tab_at_end(item.text, tab)
-            if kept != item.text:
-                item.text = kept
-                changed += 1
-        elif _only_tab(item.text, tab):
+        if item.label != DocItemLabel.CODE and _only_tab(item.text, tab):
             item.content_layer = ContentLayer.FURNITURE
+            changed += 1
+            continue
+        kept = _without_tab_at_end(item.text, tab)       # book page 887: "this C++ PRECEDENCE TABLE AND KEYWORDS"
+        if kept != item.text:
+            item.text = kept
             changed += 1
     for table in doc.tables:
         tab = tabs.get(table.prov[0].page_no) if table.prov else None
@@ -119,15 +119,18 @@ def _only_tab(text: str, tab: Counter) -> bool:
 
 
 def _without_tab_at_end(text: str, tab: Counter) -> str:
-    """The listing without the tab's words at its end, if they are there: at least half of the tab's letters."""
+    """The text without the tab's words at its end, if they are there: at least half of the tab's letters.
+    What is left must have a small letter: in text all in capitals, like the heading "MULTIPLE INHERITANCE" on a
+    page whose tab is "9 INHERITANCE", the tab's words cannot be told from the text's own."""
     words = text.split()
     cut = len(words)
     while cut and _looks_like_tab(words[cut - 1:]) and not (_letters(" ".join(words[cut - 1:])) - tab):
         cut -= 1
     found = _letters(" ".join(words[cut:]))
-    if cut == len(words) or sum(found.values()) * 2 < sum(tab.values()):
+    kept = " ".join(words[:cut])
+    if cut == len(words) or sum(found.values()) * 2 < sum(tab.values()) or kept == kept.upper():
         return text
-    return " ".join(words[:cut])
+    return kept
 
 
 def _remove_tab_columns(table: TableItem, tab: Counter) -> int:
