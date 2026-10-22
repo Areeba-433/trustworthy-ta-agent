@@ -8,6 +8,7 @@ Every deck is generated in code with python-pptx: the repo is public, so no real
 import copy
 import hashlib
 import io
+import logging
 import zipfile
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -34,7 +35,10 @@ from pptx.util import Inches
 from app.core.config import settings
 from app.ingestion import messages
 from app.ingestion.contract import ParsedDocument, PrecheckResult, ResourceMeta
+from app.ingestion.dispatcher import ingest_file
 from app.ingestion.loaders.pptx import load
+from app.ingestion.registry import is_heavy
+from app.ingestion.storage import parsed_path
 
 FILE_NAME = "Stacks_final.pptx"       # title_from_filename() turns this into TITLE
 TITLE = "Stacks"
@@ -475,3 +479,75 @@ def test_loading_twice_gives_identical_output_even_from_the_cache(lecture, lectu
     meta = _meta_for(lecture_file)
     assert cache_file(meta.file_sha256, "pptx").exists()         # the second load really reads the cache
     assert load(lecture_file, meta).model_dump_json() == lecture.model_dump_json()
+
+
+# ================================================================ part 3: broken files through ingest_file()
+
+def _write_small_deck(path: Path) -> None:
+    deck = Presentation()
+    deck.slides.add_slide(deck.slide_layouts[LAYOUT["title_only"]]).shapes.title.text = "Push"
+    deck.save(str(path))
+
+
+def _write_truncated(path: Path) -> None:
+    _write_small_deck(path)
+    path.write_bytes(path.read_bytes()[: path.stat().st_size // 2])
+
+
+def _write_pictures_only(path: Path) -> None:
+    deck = Presentation()
+    deck.slides.add_slide(deck.slide_layouts[LAYOUT["blank"]]).shapes.add_picture(_png(), Inches(1), Inches(1))
+    deck.save(str(path))
+
+
+def _write_word_file(path: Path) -> None:
+    from docx import Document
+
+    document = Document()
+    document.add_paragraph("A Word file saved with a .pptx name.")
+    document.save(str(path))
+
+
+def _write_zip(path: Path) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("notes.txt", "a zip file, but not a presentation")
+
+
+@pytest.mark.parametrize(("write", "reason"), [
+    pytest.param(lambda p: p.write_bytes(b""), messages.TYPE_MISMATCH, id="empty file"),
+    pytest.param(lambda p: p.write_bytes(b"not a presentation"), messages.TYPE_MISMATCH, id="plain text"),
+    pytest.param(lambda p: Presentation().save(str(p)), messages.UNREADABLE, id="no slides"),
+    pytest.param(_write_truncated, messages.UNREADABLE, id="cut off"),
+    pytest.param(_write_zip, messages.UNREADABLE, id="zip, not a deck"),
+    pytest.param(_write_word_file, messages.TYPE_MISMATCH, id="renamed Word file"),
+    pytest.param(_write_pictures_only, messages.NO_TEXT_FILE, id="pictures only"),
+])
+def test_a_broken_or_empty_deck_fails_with_a_teacher_message(data_dir, tmp_path, write, reason):
+    path = tmp_path / "upload.pptx"
+    write(path)
+    doc = ingest_file(path, "r1", "c1")
+    assert (doc.quality.status, doc.quality.warnings, doc.blocks) == ("failed", [reason], [])
+    assert parsed_path("r1").exists()                             # the failure is saved like any result
+
+
+def test_a_crash_inside_docling_fails_politely_and_logs_the_traceback(data_dir, tmp_path, monkeypatch, caplog):
+    from app.ingestion import converter
+
+    def crash(path: Path, source_type: str, file_sha256: str | None = None) -> None:
+        raise RuntimeError("Docling broke")
+
+    monkeypatch.setattr(converter, "convert", crash)
+    path = tmp_path / "upload.pptx"
+    _write_small_deck(path)
+    with caplog.at_level(logging.ERROR, logger="tta.ingestion"):
+        doc = ingest_file(path, "r1", "c1")
+    assert (doc.quality.status, doc.quality.warnings) == ("failed", [messages.INTERNAL])
+    assert any(r.exc_info and "Docling broke" in str(r.exc_info[1]) for r in caplog.records)
+
+
+def test_a_good_deck_goes_all_the_way_through_ingest_file(data_dir, tmp_path):
+    path = tmp_path / "upload.pptx"
+    _write_small_deck(path)
+    doc = ingest_file(path, "r1", "c1")
+    assert (doc.quality.status, _rows(doc)) == ("ok", [("heading", "Push", 1)])
+    assert is_heavy("pptx")                                       # one Docling file at a time: see register()
