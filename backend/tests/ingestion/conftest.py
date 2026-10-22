@@ -1,3 +1,4 @@
+import zlib
 from types import SimpleNamespace
 
 import pypdfium2 as pdfium
@@ -27,21 +28,26 @@ def scanned_pdf(tmp_path):
     return path
 
 
-def write_pdf(path, pages, fonts=("Helvetica",), mediabox=(0, 0, 595, 842)):
+def write_pdf(path, pages, fonts=("Helvetica",), mediabox=(0, 0, 595, 842), images=()):
     """A PDF written by hand, no extra library. `pages` holds one content stream per page, which names the fonts
     /F1, /F2 ... in the order of `fonts`. Text uses Windows character codes, so curly quotes and apostrophes come
-    out as typed. Most PDFs' pages start at (0, 0), but not all: `mediabox` can move the page's corner."""
+    out as typed. Most PDFs' pages start at (0, 0), but not all: `mediabox` can move the page's corner.
+    `images` holds picture objects (dictionary and stream) that every page can draw as /Im0, /Im1 ..."""
     objects = [b"<< /Type /Catalog /Pages 2 0 R >>", b""]
     objects += [b"<< /Type /Font /Subtype /Type1 /BaseFont /%s /Encoding /WinAnsiEncoding >>" % font.encode()
                 for font in fonts]
     font_names = b" ".join(b"/F%d %d 0 R" % (n, n + 2) for n in range(1, len(fonts) + 1))
+    resources = b"/Font << %s >>" % font_names
+    if images:
+        resources += b" /XObject << %s >>" % b" ".join(b"/Im%d %d 0 R" % (n, len(objects) + n + 1)
+                                                       for n in range(len(images)))
+        objects += list(images)
     kids = []
     for content in pages:
         stream = content.encode("cp1252")
         objects.append(b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream")
-        objects.append(b"<< /Type /Page /Parent 2 0 R /MediaBox [%s] /Contents %d 0 R "
-                       b"/Resources << /Font << %s >> >> >>"
-                       % (" ".join(map(str, mediabox)).encode(), len(objects), font_names))
+        objects.append(b"<< /Type /Page /Parent 2 0 R /MediaBox [%s] /Contents %d 0 R /Resources << %s >> >>"
+                       % (" ".join(map(str, mediabox)).encode(), len(objects), resources))
         kids.append(b"%d 0 R" % len(objects))
     objects[1] = b"<< /Type /Pages /Kids [" + b" ".join(kids) + b"] /Count %d >>" % len(pages)
     out = bytearray(b"%PDF-1.4\n")
@@ -144,6 +150,24 @@ def figure_pdf(tmp_path):
         dx, dy = corner
         drawing = f"0 0 0 rg {100 + dx} {300 + dy} 300 200 re f"
         return write_pdf(tmp_path / "figure.pdf", [drawing], mediabox=(dx, dy, dx + 595, dy + 842))
+    return make
+
+
+@pytest.fixture
+def picture_pdf(tmp_path):
+    """picture_pdf(colorspace="DeviceCMYK"): one page with one small picture, Flate-compressed (like PNG) and stored
+    in `colorspace`: "DeviceCMYK", the four printing inks, like the pictures on book page 94 that crash docling-parse's
+    page drawing; "DeviceRGB" or "DeviceGray", which do not."""
+    def make(colorspace="DeviceCMYK"):
+        inks = {"DeviceCMYK": 4, "DeviceRGB": 3, "DeviceGray": 1}[colorspace]
+        width, height = 80, 48                                         # the first picture on book page 94
+        pixels = zlib.compress(bytes((x * 3 + y * 5 + ink * 60) % 256
+                                     for y in range(height) for x in range(width) for ink in range(inks)))
+        picture = (b"<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /%s /BitsPerComponent 8"
+                   b" /Filter /FlateDecode /Length %d >>\nstream\n" % (width, height, colorspace.encode(), len(pixels))
+                   + pixels + b"\nendstream")
+        page = "BT /F1 12 Tf 72 720 Td (A page with one small picture.) Tj ET\nq 160 0 0 96 72 580 cm /Im0 Do Q"
+        return write_pdf(tmp_path / f"picture_{colorspace}.pdf", [page], mediabox=(0, 0, 612, 792), images=[picture])
     return make
 
 

@@ -37,7 +37,7 @@ def pdf_options() -> PdfPipelineOptions:
     return PdfPipelineOptions(
         do_ocr=False,                      # digital files only (the pre-check refuses scans); OCR is the slowest
         do_table_structure=True,
-                   # ACCURATE: on the OOP book's hardest tables it fixed most wrong cells (docs/ingestion/pdf-table-mode.md)
+        # ACCURATE: on the OOP book's hardest tables it fixed most wrong cells (docs/ingestion/pdf-table-mode.md)
         table_structure_options=TableStructureOptions(mode=TableFormerMode.ACCURATE),
         heading_hierarchy_options=HeadingHierarchyOptions(enabled=True),   # levels from bookmarks and "5.3"
         do_code_enrichment=False,          # an extra model per code block: only if listings lose structure
@@ -56,8 +56,17 @@ def get_converter(source_type: str) -> DocumentConverter:
     from docling.document_converter import DocumentConverter, PdfFormatOption   # slow import: only when needed
 
     fmt = _FORMATS[source_type]
-    options = {fmt: PdfFormatOption(pipeline_options=pdf_options())} if fmt is InputFormat.PDF else {}
+    options = ({fmt: PdfFormatOption(pipeline_options=pdf_options(), backend=pdf_backend())}
+               if fmt is InputFormat.PDF else {})
     return DocumentConverter(allowed_formats=[fmt], format_options=options)
+
+
+def pdf_backend() -> type:
+    """How Docling reads our PDFs: docling-parse's words, pdfium's page pictures (see app/ingestion/pdf_backend.py).
+    Imported only when needed: it loads docling-parse."""
+    from app.ingestion.pdf_backend import DoclingParseWordsPdfiumPages
+
+    return DoclingParseWordsPdfiumPages
 
 
 @dataclass(frozen=True)
@@ -90,11 +99,11 @@ def cache_file(file_sha256: str, source_type: str) -> Path:
 
 
 def settings_fingerprint(source_type: str) -> str:
-    """12 characters that change whenever docling-core or our settings for this format change."""
-        # serialize_as_any: Docling types some options as a base class (table_structure_options is one), and without it
+    """12 characters that change whenever docling-core or our settings for this format change, the PDF reader too."""
+    # serialize_as_any: Docling types some options as a base class (table_structure_options is one), and without it
     # pydantic writes only the base class's fields: the table mode was left out of the name
-    settings = (pdf_options().model_dump(exclude={"accelerator_options"}, serialize_as_any=True)
-                if source_type == "pdf" else {})
+    settings = ({**pdf_options().model_dump(exclude={"accelerator_options"}, serialize_as_any=True),
+                 "backend": pdf_backend().__qualname__} if source_type == "pdf" else {})
     text = json.dumps([source_type, version("docling-core"), settings], sort_keys=True, default=_json_fallback)
     return hashlib.sha256(text.encode()).hexdigest()[:12]
 
