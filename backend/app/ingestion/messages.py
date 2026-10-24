@@ -11,6 +11,7 @@ GARBLED_PDF = "The text in most pages of this PDF can't be read correctly. Pleas
 AUDIO_TOO_LONG = "This recording is too long. Please split it into parts under 3 hours."
 NO_SPEECH = "No speech was found in this recording."
 AUDIO_LONG = "This is a long recording, so processing it takes a while."
+PICTURE_OCR = "Text in this file's pictures was read automatically (OCR) and may contain mistakes."
 def format_ranges(nums: list[int]) -> str:
     """[3, 7, 8, 9] -> '3, 7 to 9'"""
     groups: list[list[int]] = []
