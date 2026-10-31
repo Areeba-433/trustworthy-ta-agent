@@ -6,7 +6,7 @@ from app.ingestion.converter import Conversion
 from app.ingestion.dispatcher import ingest_file
 from app.ingestion.docling_blocks import to_blocks
 from app.ingestion.loaders import pdf
-from app.ingestion.pdf_code import _ascii, restore_code_lines
+from app.ingestion.pdf_code import _ascii, _Char, _words, restore_code_lines
 
 LISTING = [
     "struct Node {",
@@ -173,6 +173,14 @@ def test_a_font_s_drawing_pieces_are_dropped():
     assert _ascii("c1=0 ←\uf8e7\uf8e7\uf8e7 counts") == "c1=0 ← counts"
 
 
+def test_the_pdf_s_own_space_separates_words_even_where_a_letter_reaches_into_it():
+    """pdfium 156 (pypdfium2 5.14) measures the Times "f" wider than pdfium 153: its box reaches into the space of
+    "of type", the gap left was too small to count, and "oftype" matched none of Docling's words."""
+    of = [_Char("o", 179.20, 184.20, 600, 10, False), _Char("f", 184.20, 188.55, 600, 10, False)]
+    type_ = [_Char("t", 190.03, 192.82, 600, 10, False, spaced=True), _Char("y", 192.81, 197.81, 600, 10, False)]
+    assert _words(of + type_, width=5.0) == ["of", "ty"]
+
+
 def test_a_listing_with_no_line_in_a_fixed_width_font_is_never_split(listing_pdf):
     """Some books print code in an ordinary font: then no line can be told from a sentence, and nothing is split."""
     lines = [("sentence", "x = 1;"), ("sentence", "y = 2;")]
@@ -330,3 +338,112 @@ def test_paragraphs_stay_whole_in_a_book_whose_listings_are_not_in_a_fixed_width
     doc.add_code("x = 1; y = 2;", prov=ProvenanceItem(page_no=1, bbox=_lines_box(n, n + 1), charspan=(0, 0)))
     blocks = restore_code_lines(to_blocks(doc, "pdf", "Book"), doc, path)
     assert [b.kind for b in blocks] == ["paragraph", "code"]
+
+
+# ================================================================= one region that Docling cut into overlapping items
+
+def _box(first: int, last: int, from_column: int = 0, to_column: int = 60) -> BoundingBox:
+    """Like _lines_box, but only columns from_column..to_column of the lines."""
+    box = _lines_box(first, last, to_column)
+    return box.model_copy(update={"l": 71 + from_column * 5.4})
+
+
+def _book_with_pieces(*pieces: tuple) -> DoclingDocument:
+    """LISTING as its own code item, then `pieces`: (label, text, box) one after the other, as Docling cut them."""
+    doc = book(squashed(LISTING), _lines_box(0, len(LISTING) - 1))
+    for label, text, box in pieces:
+        prov = ProvenanceItem(page_no=1, bbox=box, charspan=(0, len(text)))
+        if label == DocItemLabel.CODE:
+            doc.add_code(text, prov=prov)
+        else:
+            doc.add_text(label, text, prov=prov)
+    return doc
+
+
+def test_a_line_cut_into_two_code_items_side_by_side_is_one_line(listing_pdf):
+    """Book page 174: "if( chosen == prize )" and its comment "//not legal yet" came out as two code blocks."""
+    n = len(LISTING)
+    path, _ = listing_pdf(LISTING + ["if( chosen == prize )        //not legal yet"])
+    doc = _book_with_pieces((DocItemLabel.CODE, "if( chosen == prize )", _box(n, n, 0, 22)),
+                            (DocItemLabel.CODE, "//not legal yet", _box(n, n, 29, 45)))
+    assert _after_listing(doc, path) == [("code", "if( chosen == prize )        //not legal yet")]
+
+
+def test_the_end_of_a_long_line_in_the_next_code_item_goes_back_to_its_line(listing_pdf):
+    """Book page 189: the line << "long ... 2,147,483,647" << endl; was cut in two, its end in a second code
+    item that also held the rest of the listing."""
+    n = len(LISTING)
+    lines = LISTING + ['cout << "char  -128 to 127" << endl', '     << "long  -2,147,483,648" << endl;', "return 0;"]
+    path, _ = listing_pdf(lines)
+    doc = _book_with_pieces((DocItemLabel.CODE, 'cout << "char -128 to 127" << endl << "long', _box(n, n + 1)),
+                            (DocItemLabel.CODE, '-2,147,483,648" << endl; return 0;', _box(n + 1, n + 2)))
+    assert _after_listing(doc, path) == [("code", "\n".join(lines[n:]))]
+
+
+def test_a_separator_line_given_to_the_paragraph_below_goes_back_into_the_listing(listing_pdf):
+    """Book page 205: Docling gave the listing's //----- line to the paragraph under the listing."""
+    n = len(LISTING)
+    lines = LISTING + ["int a;", "//--------", "int b;", ("sentence", "In main() the variable is gone.")]
+    path, _ = listing_pdf(lines)
+    doc = _book_with_pieces((DocItemLabel.CODE, "int a; int b;", _box(n, n + 2)),
+                            (DocItemLabel.TEXT, "//-------- In main() the variable is gone.", _box(n + 1, n + 3)))
+    assert _after_listing(doc, path) == [("code", "int a;\n//--------\nint b;"),
+                                         ("paragraph", "In main() the variable is gone.")]
+
+
+def test_listings_and_sentences_interleaved_by_docling_come_out_in_page_order(listing_pdf):
+    """Book page 216: two overlapping code boxes took every other line, a declaration and the sentence about it."""
+    n = len(LISTING)
+    lines = LISTING + ["void repchar();", ("sentence", "which takes no arguments, and"), "void repchar(char);",
+                       ("sentence", "which takes one.")]
+    path, _ = listing_pdf(lines)
+    doc = _book_with_pieces((DocItemLabel.CODE, "void repchar(); void repchar(char);", _box(n, n + 2)),
+                            (DocItemLabel.CODE, "which takes no arguments, and which takes one.", _box(n + 1, n + 3)))
+    assert _after_listing(doc, path) == [("code", "void repchar();"), ("paragraph", "which takes no arguments, and"),
+                                         ("code", "void repchar(char);"), ("paragraph", "which takes one.")]
+
+
+def test_a_line_of_code_cut_into_a_formula_and_a_paragraph_is_one_line(listing_pdf):
+    """Book page 174 again: the two halves were not code items at all, but a formula and a paragraph."""
+    n = len(LISTING)
+    path, _ = listing_pdf(LISTING + ["if( chosen == prize )        //not legal yet"])
+    doc = _book_with_pieces((DocItemLabel.FORMULA, "if( chosen == prize )", _box(n, n, 0, 22)),
+                            (DocItemLabel.TEXT, "//not legal yet", _box(n, n, 29, 45)))
+    assert _after_listing(doc, path) == [("code", "if( chosen == prize )        //not legal yet")]
+
+
+def test_a_paragraph_whose_box_swallowed_the_one_before_comes_out_in_page_order(listing_pdf):
+    """Book page 195: "The next call to repchar()", the call itself, then "tells it to print..." and the output.
+    Docling made one paragraph of most of it, with a box that also covered the paragraph it put first."""
+    n = len(LISTING)
+    lines = LISTING + [("sentence", "The next call to repchar()"), "repchar('=', 23);",
+                       ("sentence", "tells it to print a line."), "======"]
+    path, _ = listing_pdf(lines)
+    doc = _book_with_pieces((DocItemLabel.TEXT, "tells it to print a line.", _box(n + 2, n + 2)),
+                            (DocItemLabel.TEXT, "The next call to repchar() repchar('=', 23); ======", _box(n, n + 3)))
+    assert _after_listing(doc, path) == [("paragraph", "The next call to repchar()"), ("code", "repchar('=', 23);"),
+                                         ("paragraph", "tells it to print a line."), ("code", "======")]
+
+
+def test_overlapping_paragraphs_without_a_line_of_code_are_not_touched(listing_pdf):
+    """A word of code in a sentence is not enough: only regions with whole lines of code are laid out again."""
+    n = len(LISTING)
+    path, _ = listing_pdf(LISTING + [("inline", "First words about", "x"), ("sentence", "Second words here.")])
+    doc = _book_with_pieces((DocItemLabel.TEXT, "Second words here.", _box(n + 1, n + 1)),
+                            (DocItemLabel.TEXT, "First words about x", _box(n, n + 1)))
+    assert _after_listing(doc, path) == [("paragraph", "Second words here."), ("paragraph", "First words about x")]
+
+
+def test_overlapping_items_whose_words_are_not_all_in_the_region_stay_as_they_are(listing_pdf):
+    n = len(LISTING)
+    path, _ = listing_pdf(LISTING + ["int a;", "int b;"])
+    doc = _book_with_pieces((DocItemLabel.CODE, "int a;", _box(n, n + 1)),
+                            (DocItemLabel.CODE, "int c;", _box(n, n + 1)))       # Docling's words: not the PDF's
+    assert _after_listing(doc, path) == [("code", "int a;"), ("code", "int c;")]
+
+
+def test_a_listing_of_sentences_with_a_few_code_words_is_a_paragraph(listing_pdf):
+    """Book page 216: "which takes one argument of type char": the sentence holds code words, but it is a sentence."""
+    path, _ = listing_pdf(LISTING + [("inline", "which takes one argument of type", "char")])
+    doc = _book_with_listing((DocItemLabel.CODE, "which takes one argument of type char", len(LISTING), len(LISTING)))
+    assert _after_listing(doc, path) == [("paragraph", "which takes one argument of type char")]

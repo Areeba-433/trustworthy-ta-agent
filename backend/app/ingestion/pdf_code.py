@@ -56,6 +56,7 @@ _WORD_GAP = 0.3        # columns: a gap this wide is a space between two words
 _FONT_PAGES = 60       # pages sampled, spread over the file, to tell the fixed-width fonts from the others
 _FONT_LETTERS = 40     # letters a font needs on those pages before it is called either
 _SAME_WIDTH = 0.15     # points: two letters this close in width are equally wide
+_OVERLAP = 2.0         # points: boxes of blocks one after the other that overlap more than this, top to bottom
 # Docling turns these into plain ASCII in all text; we do the same so both versions can be compared word by word.
 # In code they are wrong anyway: a student who copies “hello” into a compiler gets an error.
 _ASCII = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', "⁄": "/", "\x02": "-",
@@ -72,6 +73,7 @@ class _Char:
     y: float           # vertical centre: every character on one line shares it
     height: float
     fixed: bool | None = None   # its font is fixed-width (True), ordinary (False), or not known (None)
+    spaced: bool = False        # the PDF has a space just before it: a new word begins here
 
 
 @dataclass(frozen=True)
@@ -98,9 +100,15 @@ def restore_code_lines(blocks: Sequence[Block], doc: DoclingDocument, path: Path
                     for n, b in enumerate(blocks) if b.kind == "code" and _label(items, b) == DocItemLabel.CODE}
         listed = [c for chars in listings.values() if chars for c in chars]
         code_font = sum(c.fixed is True for c in listed) > sum(c.fixed is False for c in listed)
+        merged = _merged_runs(blocks, items, pdf, pages, fonts, counts) if code_font else {}
         out: list[Block] = []
+        skip_to = -1
         for n, block in enumerate(blocks):
-            if n in listings:
+            if n <= skip_to:
+                continue
+            if n in merged:
+                skip_to, new = merged[n]
+            elif n in listings:
                 new = _listing_blocks(block, listings[n], code_font, counts)
             elif code_font and block.kind in _TEXT_KINDS and block.extra.get("ref") in items:
                 new = _text_blocks(block, items[block.extra["ref"]], pdf, pages, fonts, counts)
@@ -110,9 +118,10 @@ def restore_code_lines(blocks: Sequence[Block], doc: DoclingDocument, path: Path
     finally:
         pdf.close()
     logger.info("code listings: %d rebuilt from the PDF text layer, %d with sentences taken out, %d of only "
-                "sentences; %d paragraphs, list items or formulas with code-font lines", counts["rebuilt"],
-                counts["split"], counts["sentences"], counts["text"])
-    return [b.model_copy(update={"seq": n}) for n, b in enumerate(out)] if len(out) != len(blocks) else out
+                "sentences; %d paragraphs, list items or formulas with code-font lines; %d regions Docling cut into "
+                "overlapping items", counts["rebuilt"], counts["split"], counts["sentences"], counts["text"],
+                counts["merged"])
+    return [b if b.seq == n else b.model_copy(update={"seq": n}) for n, b in enumerate(out)]
 
 
 _TEXT_KINDS = {"paragraph", "list_item", "formula"}     # Docling's text blocks that can hold code-font lines
@@ -129,10 +138,10 @@ def _listing_blocks(block: Block, found: list[_Char] | None, code_font: bool, co
     if found is None:
         logger.debug("kept Docling's text for %s: the PDF does not have its words there", block.extra["ref"])
         return [block]
-    if code_font and all(c.fixed is False for c in found):
+    parts = _parts(found)
+    if code_font and (all(c.fixed is False for c in found) or [kind for kind, _ in parts] == ["sentence"]):
         counts["sentences"] += 1
         return [_part_block(block, "sentence", found, found)]
-    parts = _parts(found)
     if len(parts) == 1:                                  # the usual case: the whole box is code
         text = _ascii(_layout(found))
         if text == block.text:
@@ -142,6 +151,102 @@ def _listing_blocks(block: Block, found: list[_Char] | None, code_font: bool, co
     counts["rebuilt"] += 1
     counts["split"] += 1
     return [_part_block(block, kind, chars, found) for kind, chars in parts]
+
+
+def _merged_runs(blocks: Sequence[Block], items: dict[str, DocItem], pdf: pdfium.PdfDocument,
+                 pages: dict[int, _Page | None], fonts: dict[str, bool],
+                 counts: Counter) -> dict[int, tuple[int, list[Block]]]:
+    """{first block: (last block, the blocks that replace them)} for each run of blocks, one after the other on a
+    page, whose boxes overlap, in a region with code-font lines. Docling sometimes cuts one region into overlapping
+    items: the end of a long line in a second code item (book page 189), a listing's separator line in the paragraph
+    below it (page 205), two listings and their sentences interleaved (page 216), a line of code cut in two
+    (page 174), a paragraph whose box swallowed the one before it (page 195). The region is then laid out again
+    from the PDF, line by line, top to bottom."""
+    runs: dict[int, tuple[int, list[Block]]] = {}
+    n = 0
+    while n < len(blocks):
+        first = _place(blocks[n], items, pdf, pages, fonts)
+        end, region = n, first[1] if first else None
+        while first and end + 1 < len(blocks):
+            nxt = _place(blocks[end + 1], items, pdf, pages, fonts)
+            if nxt is None or nxt[0] != first[0] or min(region.t, nxt[1].t) - max(region.b, nxt[1].b) <= _OVERLAP:
+                break
+            end, region = end + 1, BoundingBox(l=min(region.l, nxt[1].l), r=max(region.r, nxt[1].r),
+                                               t=max(region.t, nxt[1].t), b=min(region.b, nxt[1].b),
+                                               coord_origin=CoordOrigin.BOTTOMLEFT)
+        run = blocks[n:end + 1]
+        new = _merged(run, [items[b.extra["ref"]] for b in run], pages[first[0]], region) if end > n else None
+        if new is not None:
+            runs[n] = (end, new)
+            counts["merged"] += 1
+            n = end + 1
+        else:
+            n += 1
+    return runs
+
+
+def _place(block: Block, items: dict[str, DocItem], pdf: pdfium.PdfDocument, pages: dict[int, _Page | None],
+           fonts: dict[str, bool]) -> tuple[int, BoundingBox] | None:
+    """(page, Docling's box measured from the page's bottom) of a code or text block with one box, or None."""
+    item = items.get(block.extra.get("ref"))
+    if (block.kind != "code" and block.kind not in _TEXT_KINDS) or item is None or len(item.prov) != 1:
+        return None
+    page = _page(pdf, pages, item.prov[0].page_no, fonts)
+    return (item.prov[0].page_no, item.prov[0].bbox.to_bottom_left_origin(page.height)) if page else None
+
+
+def _merged(run: Sequence[Block], run_items: list[DocItem], page: _Page, region: BoundingBox) -> list[Block] | None:
+    """The run's region from the PDF as code and paragraphs, top to bottom; None unless the PDF has exactly the
+    run's words in the region (in any order: that is what Docling mixed up)."""
+    wanted = Counter(_ascii(w) for item in run_items for w in (getattr(item, "text", "") or
+                                                                getattr(item, "orig", "") or "").split())
+    for box in _boxes(region, page):
+        chars = [c for c in page.chars if _inside(c, box)]
+        if not any(c.fixed for c in chars):
+            return None
+        lines, width = _lines(chars), _width(chars)
+        if not any(Counter(_joined_words(lines, width, hyphen)) == wanted for hyphen in ("", "-")):
+            continue
+        refs = [b.extra["ref"] for b in run]
+        left = min(c.left for c in chars if c.fixed)
+        out, kinds = [], [_line_kind(line, width) for line in lines]
+        if "code" not in kinds:                          # overlapping paragraphs with no code: not ours to redo
+            return None
+        for n, (kind, line) in enumerate(zip(kinds, lines)):
+            if n and kinds[n - 1] == kind:
+                out[-1][1].append(line)
+            else:
+                out.append((kind, [line]))
+        blocks = []
+        for kind, part in out:
+            extra = {**run[0].extra, "merged_from": refs}
+            if kind == "code":
+                text = _ascii(_layout([c for line in part for c in line], left))
+                blocks.append(run[0].model_copy(update={"kind": "code", "text": text, "lang": "code",
+                                                        "extra": {**extra, "lines_from": "pdf_text"}}))
+            else:
+                text = clean_text("\n".join(" ".join(_words(line, width)) for line in part).replace("\ufffe", "-"))
+                blocks.append(run[0].model_copy(update={"kind": "paragraph", "text": text, "lang": detect_lang(text),
+                                                        "extra": extra}))
+        return blocks
+    return None
+
+
+def _joined_words(lines: list[list[_Char]], width: float, hyphen: str) -> list[str]:
+    """The lines' words; a word broken at the end of a line (pdfium marks the break with U+FFFE) joined again."""
+    words: list[str] = []
+    broken = False
+    for line in lines:
+        for n, word in enumerate(_words(line, width)):
+            if broken and n == 0:
+                words[-1] += word
+            else:
+                words.append(word)
+            broken = False
+        if words and words[-1].endswith("\ufffe"):
+            words[-1] = words[-1][:-1] + hyphen
+            broken = True
+    return words
 
 
 def _text_blocks(block: Block, item: DocItem, pdf: pdfium.PdfDocument, pages: dict[int, _Page | None],
@@ -297,13 +402,17 @@ def _read_page(pdf: pdfium.PdfDocument, page_no: int, fonts: dict[str, bool] | N
     textpage = page.get_textpage()
     try:
         chars = []
+        spaced = False
         for i in range(textpage.count_chars()):
             text = textpage.get_text_range(i, 1)
-            if text and not text.isspace():              # spaces are rebuilt from the positions
-                # "loose" box: the character's full slot, so in a monospace font every box is exactly one column wide
-                left, bottom, right, top = textpage.get_charbox(i, loose=True)
-                fixed = fonts.get(_font_name(textpage, i)) if fonts else None
-                chars.append(_Char(text, left, right, (bottom + top) / 2, top - bottom, fixed))
+            if not text or text.isspace():               # spaces are rebuilt from the positions, but they mark words:
+                spaced = True                            # letter boxes can reach into the gap ("of type", pdfium 156)
+                continue
+            # "loose" box: the character's full slot, so in a monospace font every box is exactly one column wide
+            left, bottom, right, top = textpage.get_charbox(i, loose=True)
+            fixed = fonts.get(_font_name(textpage, i)) if fonts else None
+            chars.append(_Char(text, left, right, (bottom + top) / 2, top - bottom, fixed, spaced))
+            spaced = False
         left, bottom, _, _ = page.get_cropbox()
         return _Page(page.get_height(), (left, bottom), chars)
     finally:
@@ -398,7 +507,7 @@ def _pieces(chars: list[_Char]) -> list[tuple[list[_Char], list[str]]]:
 def _words(piece: list[_Char], width: float) -> list[str]:
     words = [piece[0].text]
     for previous, c in zip(piece, piece[1:]):
-        if c.left - previous.right > width * _WORD_GAP:
+        if c.spaced or c.left - previous.right > width * _WORD_GAP:
             words.append(c.text)
         else:
             words[-1] += c.text
@@ -493,7 +602,7 @@ def _line_text(line: list[_Char], left: float, width: float) -> str:
         return text
     text, previous = "", None
     for c in line:
-        if previous is not None and c.left - previous.right <= width * _WORD_GAP:
+        if previous is not None and not c.spaced and c.left - previous.right <= width * _WORD_GAP:
             text += c.text                                                # the same word
             previous = c
             continue
