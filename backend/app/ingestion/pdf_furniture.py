@@ -8,21 +8,27 @@ code listing or a paragraph. In our OOP book that is 462 pages.
 pdfium finds the tab: its letters are rotated and stand in the outer 15% of the page. The chapter's number or
 letter is upright, just above or below them (on the OOP book's pages about 5 to 18 points). Then, in Docling's
 result:
-- an item made only of the tab's letters moves to the furniture layer (to_blocks() skips it, like page numbers);
-- a table column made only of them is removed;
-- cells of a table's last column that end with them, after their own text, lose them;
-- a code listing or a paragraph that ends with them loses them.
+- an item made only of the tab's letters, standing where the tab stands, moves to the furniture layer (to_blocks()
+  skips it, like page numbers);
+- a table column made only of them is removed, if the table reaches the tab;
+- cells of a table's last column that end with them, after their own text, lose them, if the table reaches the tab;
+- a code listing or a paragraph that ends with them loses them, if its box reaches the tab: Docling merged the tab
+  into it.
+Where an item stands matters: capitals made of the tab's letters elsewhere on the page are content (book page 71:
+the program output "A" and "B" on a page whose tab is "2 C++ PROGRAMMING BASICS").
 
 Words are compared by their letters, not by their spelling: the tab is set in small capitals, and pdfium reads
 "LOOPS AND DECISIONS" as "L D OOPS AND ECISIONS".
 """
 import logging
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 
 import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_c
-from docling_core.types.doc import ContentLayer, DocItemLabel, DoclingDocument, TableData, TableItem
+from docling_core.types.doc import (BoundingBox, ContentLayer, CoordOrigin, DocItemLabel, DoclingDocument,
+                                    ProvenanceItem, TableData, TableItem)
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +36,15 @@ _EDGE = 0.15            # the outer part of the page where a tab stands, as a sh
 _MIN_ROTATED = 3        # fewer rotated letters than this is not a tab (a stray symbol)
 _NUMBER_SIDE = 15.0     # points: how far beside the rotated letters the chapter's number can stand
 _NUMBER_GAP = 25.0      # points: how far above or below them
+_NEAR = 6.0             # points: Docling's box of a piece of the tab can stick out of the tab's box this much
+
+
+@dataclass(frozen=True)
+class Tab:
+    """A page's chapter tab: its letters (the chapter's number too) and where it stands."""
+    letters: Counter
+    box: BoundingBox        # in points from the visible page's top-left corner, as Docling measures
+    page_height: float      # the visible page's height: turns Docling's bottom-left boxes into top-left ones
 
 
 def remove_chapter_tabs(doc: DoclingDocument, path: Path) -> int:
@@ -40,48 +55,54 @@ def remove_chapter_tabs(doc: DoclingDocument, path: Path) -> int:
         return 0
     changed = 0
     for item in doc.texts:
-        tab = tabs.get(item.prov[0].page_no) if item.prov else None
-        if tab is None or item.content_layer != ContentLayer.BODY:
+        if item.content_layer != ContentLayer.BODY:
             continue
-        if item.label != DocItemLabel.CODE and _only_tab(item.text, tab):
+        near = [(prov, tabs[prov.page_no]) for prov in item.prov if prov.page_no in tabs]   # its boxes on tab pages
+        on_tab = len(item.prov) == 1 and bool(near) and _stands_on_tab(*near[0])
+        if on_tab and item.label != DocItemLabel.CODE and _only_tab(item.text, near[0][1].letters):
             item.content_layer = ContentLayer.FURNITURE
             changed += 1
             continue
-        kept = _without_tab_at_end(item.text, tab)       # book page 887: "this C++ PRECEDENCE TABLE AND KEYWORDS"
-        if kept != item.text:
-            item.text = kept
-            changed += 1
+        for prov, tab in near:
+            if _reaches_tab(prov, tab):
+                kept = _without_tab_at_end(item.text, tab.letters)   # book page 887: "this C++ PRECEDENCE TABLE …"
+                if kept != item.text:
+                    item.text = kept
+                    changed += 1
+                break
     for table in doc.tables:
-        tab = tabs.get(table.prov[0].page_no) if table.prov else None
-        if tab is not None:
-            changed += _remove_tab_columns(table, tab)
-            changed += _remove_tab_words_in_cells(table, tab)
+        for prov in table.prov:
+            tab = tabs.get(prov.page_no)
+            if tab is not None and _reaches_tab(prov, tab):
+                changed += _remove_tab_columns(table, tab.letters)
+                changed += _remove_tab_words_in_cells(table, tab.letters)
+                break
     logger.info("chapter tabs on %d pages, %d items changed", len(tabs), changed)
     return changed
 
 
-def chapter_tabs(path: Path) -> dict[int, Counter]:
-    """{page number: the letters of its chapter tab} for every page that has one."""
-    tabs: dict[int, Counter] = {}
+def chapter_tabs(path: Path) -> dict[int, Tab]:
+    """{page number: its chapter tab} for every page that has one."""
+    tabs: dict[int, Tab] = {}
     pdf = pdfium.PdfDocument(str(path))
     try:
         for index in range(len(pdf)):
             page = pdf[index]
             textpage = page.get_textpage()
             try:
-                letters = _tab_letters(page, textpage)
+                tab = _find_tab(page, textpage)
             finally:
                 textpage.close()
                 page.close()
-            if letters:
-                tabs[index + 1] = letters
+            if tab is not None:
+                tabs[index + 1] = tab
     finally:
         pdf.close()
     return tabs
 
 
-def _tab_letters(page: pdfium.PdfPage, textpage: pdfium.PdfTextPage) -> Counter:
-    left, _, right, _ = page.get_cropbox()
+def _find_tab(page: pdfium.PdfPage, textpage: pdfium.PdfTextPage) -> Tab | None:
+    left, bottom, right, top = page.get_cropbox()
     edge = _EDGE * (right - left)
     rotated, upright = [], []
     for i in range(textpage.count_chars()):
@@ -91,7 +112,7 @@ def _tab_letters(page: pdfium.PdfPage, textpage: pdfium.PdfTextPage) -> Counter:
         angle = pdfium_c.FPDFText_GetCharAngle(textpage.raw, i)         # radians; -1 when pdfium cannot tell
         (rotated if 0.01 < angle < 6.27 else upright).append((i, box))
     if len(rotated) < _MIN_ROTATED:
-        return Counter()
+        return None
     l, r = min(box[0] for _, box in rotated), max(box[2] for _, box in rotated)
     b, t = min(box[1] for _, box in rotated), max(box[3] for _, box in rotated)
 
@@ -100,8 +121,27 @@ def _tab_letters(page: pdfium.PdfPage, textpage: pdfium.PdfTextPage) -> Counter:
         beside = l - _NUMBER_SIDE <= x <= r + _NUMBER_SIDE
         return beside and (t <= y <= t + _NUMBER_GAP or b - _NUMBER_GAP <= y <= b)
 
-    chars = [i for i, _ in rotated] + [i for i, box in upright if is_number(box)]
-    return _letters("".join(textpage.get_text_range(i, 1) for i in chars))
+    chars = rotated + [(i, box) for i, box in upright if is_number(box)]
+    letters = _letters("".join(textpage.get_text_range(i, 1) for i, _ in chars))
+    # pdfium measures from the PDF's origin; Docling from the visible page's top-left corner
+    box = BoundingBox(l=min(c[0] for _, c in chars) - left, r=max(c[2] for _, c in chars) - left,
+                      t=top - max(c[3] for _, c in chars), b=top - min(c[1] for _, c in chars),
+                      coord_origin=CoordOrigin.TOPLEFT)
+    return Tab(letters, box, top - bottom)
+
+
+def _stands_on_tab(prov: ProvenanceItem, tab: Tab) -> bool:
+    """Docling's item stands where the tab stands: the middle of its box is on the tab."""
+    box = prov.bbox.to_top_left_origin(tab.page_height)
+    x, y = (box.l + box.r) / 2, (box.t + box.b) / 2
+    return tab.box.l - _NEAR <= x <= tab.box.r + _NEAR and tab.box.t - _NEAR <= y <= tab.box.b + _NEAR
+
+
+def _reaches_tab(prov: ProvenanceItem, tab: Tab) -> bool:
+    """Docling's box of the item overlaps the tab: the tab's words can have been merged into the item."""
+    box = prov.bbox.to_top_left_origin(tab.page_height)
+    return (box.l <= tab.box.r + _NEAR and tab.box.l - _NEAR <= box.r
+            and box.t <= tab.box.b + _NEAR and tab.box.t - _NEAR <= box.b)
 
 
 def _letters(text: str) -> Counter:
