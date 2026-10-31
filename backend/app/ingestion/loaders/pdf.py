@@ -1,6 +1,7 @@
 """PDF loader (owner: Minahil). Docling reads the book, remove_chapter_tabs() takes the decoration on the page edges
 out, to_blocks() makes blocks, restore_code_lines() gives code listings their lines back and tells code from
-sentences by font, and mark_figures() notes where each figure is, so an answer can show it."""
+sentences by font, order_by_position() puts what stands higher on a page first, and mark_figures() notes where each
+figure is, so an answer can show it."""
 from pathlib import Path
 
 from app.ingestion import messages
@@ -12,6 +13,7 @@ from app.ingestion.documents import parsed_document
 from app.ingestion.pdf_code import restore_code_lines
 from app.ingestion.pdf_figures import mark_figures
 from app.ingestion.pdf_furniture import remove_chapter_tabs
+from app.ingestion.pdf_order import order_by_position
 from app.ingestion.registry import register
 from app.ingestion.storage import Timer
 
@@ -30,6 +32,8 @@ def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
         blocks = to_blocks(conversion.document, "pdf", title)
     with timer("code_lines"):
         blocks = restore_code_lines(blocks, conversion.document, path)
+    with timer("order"):
+        blocks = order_by_position(blocks, conversion.document)
     with timer("figures"):
         blocks = mark_figures(blocks, conversion.document)
     problems, notes = page_findings(meta.precheck)
