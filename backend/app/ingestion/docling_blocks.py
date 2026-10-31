@@ -85,6 +85,8 @@ def _text(item: DocItem, kind: BlockKind, doc: DoclingDocument) -> str:
     if isinstance(item, TableItem):
         return _table_text(item, doc)
     raw: str = getattr(item, "text", "") or ""
+    if kind == "formula" and not raw.strip():
+        raw = getattr(item, "orig", "") or ""     # Docling leaves a formula's text to its formula model, off for us
     if kind in _VERBATIM:
         return raw.strip("\n") if raw.strip() else ""             # keep indentation and line breaks
     text = clean_text(raw)

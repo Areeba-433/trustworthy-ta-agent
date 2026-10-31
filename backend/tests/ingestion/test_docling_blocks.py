@@ -160,6 +160,18 @@ def test_empty_texts_and_stray_page_numbers_are_dropped_without_gaps_in_seq():
     assert [(b.seq, b.text) for b in _blocks(doc)] == [(0, "First."), (1, "Second.")]
 
 
+def test_a_formula_keeps_the_words_docling_read_there():
+    """Without its formula model, Docling leaves a formula's text empty and keeps the words it read in `orig`. In
+    the OOP book its layout model takes some code and program output for formulas: book page 105, FORDEMO's output
+    "0 1 4 9 16 ... 196", and book page 144, "if( !(x%7) && !(y%7) )". Both were lost."""
+    doc = DoclingDocument(name="t")
+    doc.add_text(DocItemLabel.TEXT, "Here's the output:", prov=_prov(1))
+    doc.add_text(DocItemLabel.FORMULA, "", orig="0  1  4  9  16  25", prov=_prov(1))
+    doc.add_text(DocItemLabel.FORMULA, "x^2", orig="x2", prov=_prov(1))        # decoded by a formula model: kept
+    assert [(b.kind, b.text) for b in _blocks(doc)] == [
+        ("paragraph", "Here's the output:"), ("formula", "0  1  4  9  16  25"), ("formula", "x^2")]
+
+
 def test_formats_docling_does_not_read_are_refused():
     with pytest.raises(ValueError):
         to_blocks(DoclingDocument(name="t"), "audio", TITLE)

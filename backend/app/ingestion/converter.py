@@ -41,7 +41,7 @@ def pdf_options() -> PdfPipelineOptions:
         table_structure_options=TableStructureOptions(mode=TableFormerMode.ACCURATE),
         heading_hierarchy_options=HeadingHierarchyOptions(enabled=True),   # levels from bookmarks and "5.3"
         do_code_enrichment=False,          # an extra model per code block: only if listings lose structure
-        do_formula_enrichment=False,       # slow, and O(n log n) in a digital book is plain text already
+        do_formula_enrichment=False,       # slow; to_blocks() takes the words Docling read for a formula instead
         generate_page_images=False,        # less memory; the original PDF is kept to show pages later
         generate_picture_images=False,
         document_timeout=PDF_TIMEOUT_SECONDS,
