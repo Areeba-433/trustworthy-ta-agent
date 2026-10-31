@@ -447,3 +447,13 @@ def test_a_listing_of_sentences_with_a_few_code_words_is_a_paragraph(listing_pdf
     path, _ = listing_pdf(LISTING + [("inline", "which takes one argument of type", "char")])
     doc = _book_with_listing((DocItemLabel.CODE, "which takes one argument of type char", len(LISTING), len(LISTING)))
     assert _after_listing(doc, path) == [("paragraph", "which takes one argument of type char")]
+
+
+def test_a_cut_line_is_found_on_a_page_that_does_not_start_at_zero(listing_pdf):
+    """Book page 174 itself: the OOP book's pages start at (54, 55). Docling's box, taken as pdfium's, lands on
+    an empty part of the page; the box measured from the page's corner is the right one, and it must be tried."""
+    n = len(LISTING)
+    path, _ = listing_pdf(LISTING + ["if( chosen == prize )        //not legal yet"], corner=(54, 55))
+    doc = _book_with_pieces((DocItemLabel.CODE, "if( chosen == prize )", _box(n, n, 0, 22)),
+                            (DocItemLabel.CODE, "//not legal yet", _box(n, n, 29, 45)))
+    assert _after_listing(doc, path) == [("code", "if( chosen == prize )        //not legal yet")]

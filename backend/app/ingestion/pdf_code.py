@@ -202,8 +202,8 @@ def _merged(run: Sequence[Block], run_items: list[DocItem], page: _Page, region:
                                                                 getattr(item, "orig", "") or "").split())
     for box in _boxes(region, page):
         chars = [c for c in page.chars if _inside(c, box)]
-        if not any(c.fixed for c in chars):
-            return None
+        if not any(c.fixed for c in chars):              # not here: try the box measured from the page's corner
+            continue
         lines, width = _lines(chars), _width(chars)
         if not any(Counter(_joined_words(lines, width, hyphen)) == wanted for hyphen in ("", "-")):
             continue
