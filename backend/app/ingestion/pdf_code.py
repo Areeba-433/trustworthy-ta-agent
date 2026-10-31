@@ -24,6 +24,11 @@ character's font, and the letters' widths tell which fonts are fixed-width. So a
 font leaves it as a paragraph of its own, in its place. A line that starts in the code font and ends in a note
 ("c1=0    <- counts are initially 0") stays code. Nothing is split unless the listing has characters in a font
 known to be fixed-width: some books print code in an ordinary font, and a font with few letters cannot be told.
+
+The other way round, Docling's paragraphs hold code too (a whole listing with its output, book page 164), and it
+takes some code for list items ("1: 22") or formulas ("day1 = 5;"). When most of the book's listings are in a
+fixed-width font, whole lines in that font become code, in their place; a listing made only of sentences becomes
+a paragraph. A paragraph changes only when the PDF has exactly Docling's words in its box.
 """
 import ctypes
 import logging
@@ -77,43 +82,153 @@ class _Page:
 
 
 def restore_code_lines(blocks: Sequence[Block], doc: DoclingDocument, path: Path) -> list[Block]:
-    """The same blocks, with each code block's text rebuilt from the PDF, and the sentences inside a listing taken
-    out as paragraphs. Rebuilt code blocks get extra["lines_from"] = "pdf_text" and the paragraphs
-    extra["split_from"] = "code", so a check script can count them; all keep Docling's id in extra["ref"]."""
-    listings = {item.self_ref: item for item in doc.texts if item.label == DocItemLabel.CODE}
-    if not any(b.kind == "code" and b.extra.get("ref") in listings for b in blocks):
-        return list(blocks)                              # nothing to rebuild: don't even open the PDF
+    """The same blocks, with each code block's text rebuilt from the PDF, the sentences inside a listing taken out
+    as paragraphs, and the code-font lines inside Docling's paragraphs, list items and formulas made code.
+    Rebuilt code blocks get extra["lines_from"] = "pdf_text", blocks made from another kind extra["split_from"] =
+    that kind, so a check script can count them; all keep Docling's id in extra["ref"]."""
+    items = {item.self_ref: item for item in doc.texts}
+    if not any(b.kind == "code" and _label(items, b) == DocItemLabel.CODE for b in blocks):
+        return list(blocks)                              # Docling found no code at all: don't even open the PDF
     pages: dict[int, _Page | None] = {}                  # each page's characters, read once
-    out: list[Block] = []
-    rebuilt = split = total = 0
+    counts: Counter = Counter()
     pdf = pdfium.PdfDocument(str(path))
     try:
         fonts = _font_kinds(pdf)
-        for block in blocks:
-            item = listings.get(block.extra.get("ref")) if block.kind == "code" else None
-            found = _found(item, block.text, pdf, pages, fonts) if item is not None else None
-            total += item is not None
-            if found is None:
-                if item is not None:
-                    logger.debug("kept Docling's text for %s: the PDF does not have its words there", item.self_ref)
-                out.append(block)
-                continue
-            parts = _parts(found)
-            if len(parts) == 1:                          # the usual case: the whole box is code
-                text = _ascii(_layout(found))
-                if text != block.text:
-                    block = block.model_copy(update={"text": text, "extra": {**block.extra, "lines_from": "pdf_text"}})
-                    rebuilt += 1
-                out.append(block)
-                continue
-            split += 1
-            rebuilt += 1
-            out += [_part_block(block, kind, chars, found) for kind, chars in parts]
+        listings = {n: _found(items[b.extra["ref"]], b.text, pdf, pages, fonts)
+                    for n, b in enumerate(blocks) if b.kind == "code" and _label(items, b) == DocItemLabel.CODE}
+        listed = [c for chars in listings.values() if chars for c in chars]
+        code_font = sum(c.fixed is True for c in listed) > sum(c.fixed is False for c in listed)
+        out: list[Block] = []
+        for n, block in enumerate(blocks):
+            if n in listings:
+                new = _listing_blocks(block, listings[n], code_font, counts)
+            elif code_font and block.kind in _TEXT_KINDS and block.extra.get("ref") in items:
+                new = _text_blocks(block, items[block.extra["ref"]], pdf, pages, fonts, counts)
+            else:
+                new = [block]
+            out += new
     finally:
         pdf.close()
-    logger.info("rebuilt %d of %d code listings from the PDF text layer, %d with sentences taken out",
-                rebuilt, total, split)
-    return [b.model_copy(update={"seq": n}) for n, b in enumerate(out)] if split else out
+    logger.info("code listings: %d rebuilt from the PDF text layer, %d with sentences taken out, %d of only "
+                "sentences; %d paragraphs, list items or formulas with code-font lines", counts["rebuilt"],
+                counts["split"], counts["sentences"], counts["text"])
+    return [b.model_copy(update={"seq": n}) for n, b in enumerate(out)] if len(out) != len(blocks) else out
+
+
+_TEXT_KINDS = {"paragraph", "list_item", "formula"}     # Docling's text blocks that can hold code-font lines
+
+
+def _label(items: dict[str, DocItem], block: Block) -> DocItemLabel | None:
+    item = items.get(block.extra.get("ref"))
+    return item.label if item is not None else None
+
+
+def _listing_blocks(block: Block, found: list[_Char] | None, code_font: bool, counts: Counter) -> list[Block]:
+    """A code block: rebuilt from the PDF, split where it holds sentences, or a paragraph when it holds only
+    sentences in a book that prints its code in a fixed-width font (book page 237: "17. Here's a function:")."""
+    if found is None:
+        logger.debug("kept Docling's text for %s: the PDF does not have its words there", block.extra["ref"])
+        return [block]
+    if code_font and all(c.fixed is False for c in found):
+        counts["sentences"] += 1
+        return [_part_block(block, "sentence", found, found)]
+    parts = _parts(found)
+    if len(parts) == 1:                                  # the usual case: the whole box is code
+        text = _ascii(_layout(found))
+        if text == block.text:
+            return [block]
+        counts["rebuilt"] += 1
+        return [block.model_copy(update={"text": text, "extra": {**block.extra, "lines_from": "pdf_text"}})]
+    counts["rebuilt"] += 1
+    counts["split"] += 1
+    return [_part_block(block, kind, chars, found) for kind, chars in parts]
+
+
+def _text_blocks(block: Block, item: DocItem, pdf: pdfium.PdfDocument, pages: dict[int, _Page | None],
+                 fonts: dict[str, bool], counts: Counter) -> list[Block]:
+    """A paragraph, list item or formula with whole lines in the code font: those lines become code, in their
+    place (book page 164: the PARTINIT listing and its output came out as one paragraph). A list item or a formula
+    changes only when it is all code ("1: 22", "day1 = 5;"). Docling's words must be exactly the PDF's words in the
+    box, or nothing changes; the sentences keep Docling's words."""
+    if len(item.prov) != 1:
+        return [block]
+    prov = item.prov[0]
+    page = _page(pdf, pages, prov.page_no, fonts)
+    raw = (getattr(item, "text", "") or getattr(item, "orig", "") or "").split()   # a formula's words: orig
+    wanted = [_ascii(word) for word in raw]
+    if page is None or not raw or not all(wanted):
+        return [block]
+    for box in _boxes(prov.bbox, page):
+        chars = [c for c in page.chars if _inside(c, box)]
+        if not any(c.fixed for c in chars):
+            continue
+        lines = _lines(chars)
+        words = _line_words(lines, _width(chars), wanted)
+        if words is None:
+            continue
+        kinds = ["code" if _code_font_line(line) else "sentence" for line in lines]
+        if "code" not in kinds or (block.kind != "paragraph" and "sentence" in kinds):
+            return [block]
+        counts["text"] += 1
+        return _text_parts(block, lines, kinds, words, raw)
+    return [block]
+
+
+def _code_font_line(line: list[_Char]) -> bool:
+    fixed = sum(c.fixed is True for c in line)
+    return fixed > 0 and fixed >= 0.9 * (fixed + sum(c.fixed is False for c in line))
+
+
+def _line_words(lines: list[list[_Char]], width: float, wanted: list[str]) -> list[int] | None:
+    """How many of Docling's words each line holds, or None when the lines' words are not Docling's words. A word
+    broken at the end of a line (pdfium marks the break with U+FFFE) counts on the line where it starts; Docling
+    joins its halves, with or without the hyphen."""
+    pieces = [(word, n) for n, line in enumerate(lines) for word in _words(line, width)]
+    counts = [0] * len(lines)
+    k = i = 0
+    while i < len(pieces) and k < len(wanted):
+        word, n = pieces[i]
+        if word.endswith("\ufffe") and i + 1 < len(pieces) and \
+                wanted[k] in (word[:-1] + pieces[i + 1][0], word[:-1] + "-" + pieces[i + 1][0]):
+            i += 2                                       # the two halves of a broken word
+        elif wanted[k] in (word, word.replace("\ufffe", "-")):
+            i += 1
+        else:
+            return None
+        counts[n] += 1
+        k += 1
+    return counts if i == len(pieces) and k == len(wanted) else None
+
+
+def _text_parts(block: Block, lines: list[list[_Char]], kinds: list[str], words: list[int],
+                raw: list[str]) -> list[Block]:
+    left = min(c.left for line, kind in zip(lines, kinds) if kind == "code" for c in line)
+    runs: list[tuple[str, list[int]]] = []
+    for n, kind in enumerate(kinds):
+        if runs and runs[-1][0] == kind:
+            runs[-1][1].append(n)
+        else:
+            runs.append((kind, [n]))
+    out, first = [], 0
+    for kind, numbers in runs:
+        count = sum(words[n] for n in numbers)
+        extra = {**block.extra, "split_from": block.kind}
+        if kind == "code":
+            text = _ascii(_layout([c for n in numbers for c in lines[n]], left))
+            out.append(block.model_copy(update={"kind": "code", "text": text, "lang": "code",
+                                                "extra": {**extra, "lines_from": "pdf_text"}}))
+        else:
+            text = clean_text(" ".join(raw[first:first + count]))
+            out.append(block.model_copy(update={"text": text, "lang": detect_lang(text), "extra": extra}))
+        first += count
+    return out
+
+
+def _page(pdf: pdfium.PdfDocument, pages: dict[int, _Page | None], page_no: int,
+          fonts: dict[str, bool] | None) -> _Page | None:
+    if page_no not in pages:
+        pages[page_no] = _read_page(pdf, page_no, fonts) if 1 <= page_no <= len(pdf) else None
+    return pages[page_no]
 
 
 def _found(item: DocItem, docling_text: str, pdf: pdfium.PdfDocument, pages: dict[int, _Page | None],
@@ -122,9 +237,7 @@ def _found(item: DocItem, docling_text: str, pdf: pdfium.PdfDocument, pages: dic
     if len(item.prov) != 1:                              # Docling gives a code item one box, on one page
         return None
     prov = item.prov[0]
-    if prov.page_no not in pages:
-        pages[prov.page_no] = _read_page(pdf, prov.page_no, fonts) if 1 <= prov.page_no <= len(pdf) else None
-    page = pages[prov.page_no]
+    page = _page(pdf, pages, prov.page_no, fonts)
     if page is None:
         return None
     wanted = _ascii(docling_text).split()

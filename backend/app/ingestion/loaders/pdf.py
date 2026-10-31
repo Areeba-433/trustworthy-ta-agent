@@ -1,6 +1,6 @@
 """PDF loader (owner: Minahil). Docling reads the book, remove_chapter_tabs() takes the decoration on the page edges
-out, to_blocks() makes blocks, restore_code_lines() gives code listings their lines back and mark_figures() notes
-where each figure is, so an answer can show it. The book rules come next."""
+out, to_blocks() makes blocks, restore_code_lines() gives code listings their lines back and tells code from
+sentences by font, and mark_figures() notes where each figure is, so an answer can show it."""
 from pathlib import Path
 
 from app.ingestion import messages

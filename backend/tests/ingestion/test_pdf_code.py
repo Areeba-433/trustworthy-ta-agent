@@ -220,3 +220,113 @@ def test_the_pdf_loader_rebuilds_listings(listing_pdf, monkeypatch, data_dir):
     [code] = [b for b in doc.blocks if b.kind == "code"]
     assert code.text == "\n".join(LISTING)
     assert "code_lines" in doc.quality.seconds_taken
+
+
+# ======================================================== code-font lines inside Docling's paragraphs and formulas
+
+def _lines_box(first: int, last: int, columns: int = 60) -> BoundingBox:
+    """Docling's box around lines first..last of a listing_pdf page (11.5 points apart, the first at 700)."""
+    return BoundingBox(l=71, r=73 + columns * 5.4, t=700 - first * 11.5 + 8, b=700 - last * 11.5 - 3,
+                       coord_origin=CoordOrigin.BOTTOMLEFT)
+
+
+def _book_with_listing(*items: tuple) -> DoclingDocument:
+    """Docling's result for a page that starts with LISTING, a code item as usual, and then `items`: (label,
+    text, first line, last line). A formula's words go to orig, as Docling leaves them."""
+    doc = book(squashed(LISTING), _lines_box(0, len(LISTING) - 1))
+    for label, text, first, last in items:
+        prov = ProvenanceItem(page_no=1, bbox=_lines_box(first, last), charspan=(0, len(text)))
+        if label == DocItemLabel.LIST_ITEM:
+            doc.add_list_item(text, prov=prov, parent=doc.add_list_group())
+        elif label == DocItemLabel.CODE:
+            doc.add_code(text, prov=prov)
+        else:
+            doc.add_text(label, "" if label == DocItemLabel.FORMULA else text, orig=text, prov=prov)
+    return doc
+
+
+def _after_listing(doc: DoclingDocument, path) -> list[tuple[str, str]]:
+    blocks = restore_code_lines(to_blocks(doc, "pdf", "Book"), doc, path)
+    assert [b.seq for b in blocks] == list(range(len(blocks)))
+    return [(b.kind, b.text) for b in blocks[1:]]
+
+
+def test_a_listing_inside_a_paragraph_comes_out_as_code_between_its_sentences(listing_pdf):
+    """Book page 164: the PARTINIT listing, the sentences around it and its output came out as one paragraph."""
+    n = len(LISTING)
+    lines = LISTING + [("sentence", "Here's the loop:"), "for(j=0; j<3; j++)", "   cout << j;",
+                       ("sentence", "It prints three numbers.")]
+    path, _ = listing_pdf(lines)
+    doc = _book_with_listing((DocItemLabel.TEXT, "Here's the loop: for(j=0; j<3; j++) cout << j; It prints three "
+                                                 "numbers.", n, n + 3))
+    assert _after_listing(doc, path) == [("paragraph", "Here's the loop:"),
+                                         ("code", "for(j=0; j<3; j++)\n   cout << j;"),
+                                         ("paragraph", "It prints three numbers.")]
+
+
+def test_a_paragraph_all_in_the_code_font_is_code(listing_pdf):
+    """Book page 177: "enum pets { cat, dog, hamster, canary, ocelot };" came out as a paragraph."""
+    path, _ = listing_pdf(LISTING + ["enum pets { cat, dog };"])
+    doc = _book_with_listing((DocItemLabel.TEXT, "enum pets { cat, dog };", len(LISTING), len(LISTING)))
+    assert _after_listing(doc, path) == [("code", "enum pets { cat, dog };")]
+
+
+def test_a_formula_in_the_code_font_is_code(listing_pdf):
+    """Book page 177: Docling took "day1 = 5;" for a formula; step 7 brought its words back, as a formula."""
+    path, _ = listing_pdf(LISTING + ["day1 = 5;"])
+    doc = _book_with_listing((DocItemLabel.FORMULA, "day1 = 5;", len(LISTING), len(LISTING)))
+    blocks = restore_code_lines(to_blocks(doc, "pdf", "Book"), doc, path)
+    assert (blocks[-1].kind, blocks[-1].text, blocks[-1].lang) == ("code", "day1 = 5;", "code")
+    assert blocks[-1].extra["split_from"] == "formula"
+
+
+def test_a_list_item_becomes_code_only_when_it_is_all_code(listing_pdf):
+    """Book page 307: the program's output "1: 22" came out as list items. An exercise with code below its
+    sentence stays a list item: what belongs to it is for the order rules to sort out."""
+    n = len(LISTING)
+    path, _ = listing_pdf(LISTING + ["1: 22", ("sentence", "1. Write a program like this:"), "int a = 1;"])
+    doc = _book_with_listing((DocItemLabel.LIST_ITEM, "1: 22", n, n),
+                             (DocItemLabel.LIST_ITEM, "1. Write a program like this: int a = 1;", n + 1, n + 2))
+    kinds = [kind for kind, _ in _after_listing(doc, path)]
+    assert kinds == ["code", "list_item"]
+
+
+def test_a_sentence_with_a_little_code_in_it_stays_a_paragraph(listing_pdf):
+    """Words of code inside a sentence ("x is true whenever x is not 0") do not make its line code."""
+    path, _ = listing_pdf(LISTING + [("note", "x", "is true whenever x is not 0")])
+    doc = _book_with_listing((DocItemLabel.TEXT, "x is true whenever x is not 0", len(LISTING), len(LISTING)))
+    assert _after_listing(doc, path) == [("paragraph", "x is true whenever x is not 0")]
+
+
+def test_a_paragraph_whose_words_are_not_all_in_its_box_is_left_alone(listing_pdf):
+    path, _ = listing_pdf(LISTING + ["day1 = 5;"])
+    doc = _book_with_listing((DocItemLabel.TEXT, "If you say day1 = 5;", len(LISTING), len(LISTING)))
+    assert _after_listing(doc, path) == [("paragraph", "If you say day1 = 5;")]
+
+
+def test_a_word_broken_at_the_end_of_a_line_is_one_of_docling_s_words(listing_pdf):
+    """pdfium marks the break of "struc-ture" with U+FFFE; Docling joins the halves."""
+    n = len(LISTING)
+    path, _ = listing_pdf(LISTING + [("sentence", "the name of the inner struc-"), ("sentence", "ture is"), "Distance"])
+    doc = _book_with_listing((DocItemLabel.TEXT, "the name of the inner structure is Distance", n, n + 2))
+    assert _after_listing(doc, path) == [("paragraph", "the name of the inner structure is"), ("code", "Distance")]
+
+
+def test_a_listing_of_only_sentences_is_a_paragraph_in_a_book_with_a_code_font(listing_pdf):
+    """Book page 237: Docling took "17. Here's a function:" for code. The book's listings are in a fixed-width
+    font, and this line is not."""
+    path, _ = listing_pdf(LISTING + [("sentence", "17. Here's a function:")])
+    doc = _book_with_listing((DocItemLabel.CODE, "17. Here's a function:", len(LISTING), len(LISTING)))
+    assert _after_listing(doc, path) == [("paragraph", "17. Here's a function:")]
+
+
+def test_paragraphs_stay_whole_in_a_book_whose_listings_are_not_in_a_fixed_width_font(listing_pdf):
+    """Docling's listings here are in an ordinary font, so the fixed-width lines elsewhere prove nothing."""
+    n = len(LISTING)
+    path, _ = listing_pdf(LISTING + [("sentence", "x = 1;"), ("sentence", "y = 2;")])
+    doc = DoclingDocument(name="book")
+    doc.add_text(DocItemLabel.TEXT, squashed(LISTING), prov=ProvenanceItem(page_no=1, bbox=_lines_box(0, n - 1),
+                                                                            charspan=(0, 0)))
+    doc.add_code("x = 1; y = 2;", prov=ProvenanceItem(page_no=1, bbox=_lines_box(n, n + 1), charspan=(0, 0)))
+    blocks = restore_code_lines(to_blocks(doc, "pdf", "Book"), doc, path)
+    assert [b.kind for b in blocks] == ["paragraph", "code"]
