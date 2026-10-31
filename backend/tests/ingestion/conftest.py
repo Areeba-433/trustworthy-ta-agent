@@ -102,6 +102,8 @@ def listing_pdf(tmp_path):
     """listing_pdf(lines, by_position=False, corner=(0, 0)): one page like a C++ book: a sentence in Times-Roman,
     `lines` as a code listing in Courier 9 pt (every character exactly 5.4 points wide), then another sentence.
     Indentation is typed as spaces, or by_position: the line simply starts further right, as many books do it.
+    A line can also be ("sentence", text): a line of Times-Roman in the listing, as books write between two pieces
+    of code; or ("note", code, note): code, then 12 columns further a note in Times-Roman beside it.
     `corner` is where the page starts in PDF points; one of our real books starts at (54, 55).
     Returns (path, box): the listing's box in points from the page's corner, as Docling's default reader reports it."""
     def make(lines, by_position=False, corner=(0, 0)):
@@ -109,6 +111,11 @@ def listing_pdf(tmp_path):
         bottom = top - (len(lines) - 1) * step
         rows = [(72.0, top + 30, "/F2 10", "MULTSHAP draws three shapes:")]       # F1: Courier, F2: Times-Roman
         for n, line in enumerate(lines):
+            if isinstance(line, tuple):
+                rows.append((72.0, top - n * step, "/F2 10" if line[0] == "sentence" else "/F1 9", line[1]))
+                if line[0] == "note":
+                    rows.append((72.0 + 12 * 5.4, top - n * step, "/F2 10", line[2]))
+                continue
             indent = len(line) - len(line.lstrip(" ")) if by_position else 0
             rows.append((72.0 + indent * 5.4, top - n * step, "/F1 9", line[indent:]))
         rows.append((72.0, bottom - 30, "/F2 10", "Because push_front only creates one node, it is fast."))
@@ -117,7 +124,9 @@ def listing_pdf(tmp_path):
                             for x, y, font, text in rows if text)
         path = write_pdf(tmp_path / "listing.pdf", [content], fonts=("Courier", "Times-Roman"),
                          mediabox=(dx, dy, dx + 595, dy + 842))
-        box = BoundingBox(l=71, r=73 + max(map(len, lines)) * 5.4, t=top + 8, b=bottom - 3,
+        widest = max((12 + len(line[-1]) if line[0] == "note" else len(line[1])) if isinstance(line, tuple)
+                     else len(line) for line in lines)
+        box = BoundingBox(l=71, r=73 + widest * 5.4, t=top + 8, b=bottom - 3,
                           coord_origin=CoordOrigin.BOTTOMLEFT)
         return path, box
     return make

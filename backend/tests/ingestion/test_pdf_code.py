@@ -6,7 +6,7 @@ from app.ingestion.converter import Conversion
 from app.ingestion.dispatcher import ingest_file
 from app.ingestion.docling_blocks import to_blocks
 from app.ingestion.loaders import pdf
-from app.ingestion.pdf_code import restore_code_lines
+from app.ingestion.pdf_code import _ascii, restore_code_lines
 
 LISTING = [
     "struct Node {",
@@ -119,14 +119,75 @@ def test_on_the_whole_page_the_lines_closest_to_the_box_are_taken(listing_pdf):
     assert lines == "x = 1;\ny = 2;\nz = 3;"
 
 
-def test_a_sentence_that_docling_put_in_the_listing_keeps_its_words_whole(listing_pdf):
-    """Book page 431: Docling's code item also holds the sentence above the listing, set in Times-Roman. The wide
-    capitals at its start must not be spread over the code font's columns ("M ULTSHAP", "An d" in the book)."""
+def test_a_sentence_that_docling_put_in_the_listing_becomes_a_paragraph_in_its_place(listing_pdf):
+    """Book page 431: Docling's code item also holds the sentence above the listing, set in Times-Roman. It comes
+    out as a paragraph of its own, before the code, and its wide capitals stay whole ("M ULTSHAP" in the book)."""
     path, box = listing_pdf(LISTING)
-    with_sentence = box.model_copy(update={"t": box.t + 40})
-    text = rebuilt(book("MULTSHAP draws three shapes: " + squashed(LISTING), with_sentence), path)
-    assert text.split("\n")[0] == "MULTSHAP draws three shapes:"
-    assert text.endswith("\n".join(LISTING))
+    doc = book("MULTSHAP draws three shapes: " + squashed(LISTING), box.model_copy(update={"t": box.t + 40}))
+    blocks = restore_code_lines(to_blocks(doc, "pdf", "Book"), doc, path)
+    assert [(b.seq, b.kind, b.text) for b in blocks] == [
+        (0, "paragraph", "MULTSHAP draws three shapes:"), (1, "code", "\n".join(LISTING))]
+    assert blocks[0].extra["split_from"] == "code" and blocks[1].extra["lines_from"] == "pdf_text"
+    assert {b.extra["ref"] for b in blocks} == {doc.texts[0].self_ref}      # both come from Docling's one item
+    assert blocks[0].loc == blocks[1].loc
+
+
+def test_sentences_between_two_pieces_of_code_leave_the_listing(listing_pdf):
+    """Book page 184: question 18 came out as one code block, "18. State the reason that enum isWord{ NO, YES };
+    is better than enum isWord{ YES, NO };". The sentences are in the book's text font."""
+    lines = LISTING + [("sentence", "18. State the reason that"), "enum isWord{ NO, YES };",
+                       ("sentence", "is better than"), "enum isWord{ YES, NO };"]
+    path, box = listing_pdf(lines)       # the code above gives the code font enough letters to be recognised
+    words = "18. State the reason that enum isWord{ NO, YES }; is better than enum isWord{ YES, NO };"
+    doc = book(squashed(LISTING) + " " + words, box)
+    blocks = restore_code_lines(to_blocks(doc, "pdf", "Book"), doc, path)
+    assert [(b.kind, b.text) for b in blocks] == [
+        ("code", "\n".join(LISTING)), ("paragraph", "18. State the reason that"), ("code", "enum isWord{ NO, YES };"),
+        ("paragraph", "is better than"), ("code", "enum isWord{ YES, NO };")]
+
+
+def test_a_note_beside_program_output_stays_with_it_and_keeps_its_gap(listing_pdf):
+    """Book page 348: the output "c1=0" with the author's note beside it, in the text font. The line starts in the
+    code font, so it stays code, and the note stays in its column."""
+    lines = ['cout << "c1=" << c1.get_count();', "return 0;  // the counters are shown", "",
+             ("note", "c1=0", "counts are initially 0"), "c2=0", ("note", "c1=1", "incremented once")]
+    path, box = listing_pdf(lines)
+    words = 'cout << "c1=" << c1.get_count(); return 0; // the counters are shown c1=0 counts are initially 0 c2=0 ' \
+            'c1=1 incremented once'
+    text = rebuilt(book(words, box), path)
+    assert text.split("\n")[3:] == ["c1=0        counts are initially 0", "c2=0", "c1=1        incremented once"]
+
+
+def test_a_long_dash_in_the_pdf_matches_docling_s_plain_one(listing_pdf):
+    """Book page 168: the PDF has "variable—dining—of", Docling "variable-dining-of". With the long dash the
+    words did not match, and Docling's one-line text was kept. (The dash is in the code font here: on Windows the
+    test PDF's Times-Roman long dash came out apart from its letters; the real book's dashes do not.)"""
+    lines = LISTING + ["int n;   // a variable—dining—of type Room"]
+    path, box = listing_pdf(lines)
+    doc = book(squashed(LISTING) + " int n; // a variable-dining-of type Room", box)
+    assert rebuilt(doc, path) == "\n".join(LISTING + ["int n;   // a variable-dining-of type Room"])
+
+
+def test_a_font_s_drawing_pieces_are_dropped():
+    """The OOP book draws a long arrow as "←" and three pieces of the Symbol font (U+F8E7), invisible junk."""
+    assert _ascii("c1=0 ←\uf8e7\uf8e7\uf8e7 counts") == "c1=0 ← counts"
+
+
+def test_a_listing_with_no_line_in_a_fixed_width_font_is_never_split(listing_pdf):
+    """Some books print code in an ordinary font: then no line can be told from a sentence, and nothing is split."""
+    lines = [("sentence", "x = 1;"), ("sentence", "y = 2;")]
+    path, box = listing_pdf(lines)
+    doc = book("x = 1; y = 2;", box)
+    assert [b.kind for b in restore_code_lines(to_blocks(doc, "pdf", "Book"), doc, path)] == ["code"]
+
+
+def test_a_code_font_with_too_few_letters_to_be_recognised_splits_nothing(listing_pdf):
+    """Here the code has only four letters: too few to tell its font is fixed-width. Without that, a line in an
+    ordinary font is no proof of a sentence, and the listing stays whole."""
+    lines = ["a = b;", ("sentence", "is the same as"), "b = a;"]
+    path, box = listing_pdf(lines)
+    doc = book("a = b; is the same as b = a;", box)
+    assert [b.kind for b in restore_code_lines(to_blocks(doc, "pdf", "Book"), doc, path)] == ["code"]
 
 
 def test_a_big_gap_becomes_at_most_two_empty_lines(listing_pdf):
