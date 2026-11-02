@@ -64,6 +64,7 @@ _SAME_WIDTH = 0.15     # points: two letters this close in width are equally wid
 _OVERLAP = 2.0         # points: boxes of blocks one after the other that overlap more than this, top to bottom
 _RUN_BLOCKS = 20       # at most this many blocks, one after the other on a page, are laid out again together
 _PARAGRAPH_GAP = 1.4   # line distances: a gap this much wider than the usual one between two lines starts a paragraph
+_SENTENCE_SHARE = 0.2  # a line with this share of its letters in an ordinary font is a sentence, not code
 # Docling turns these into plain ASCII in all text; we do the same so both versions can be compared word by word.
 # In code they are wrong anyway: a student who copies “hello” into a compiler gets an error.
 _ASCII = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', "⁄": "/", "\x02": "-",
@@ -552,16 +553,23 @@ def _parts(chars: list[_Char]) -> list[tuple[str, list[_Char]]]:
 
 
 def _line_kind(line: list[_Char], width: float) -> str:
-    """ "code" or "sentence". A line in the code font, or starting with a piece of it before a gap (a note beside a
-    program's output), is code; a line mostly in an ordinary font is a sentence; a line of unknown fonts stays code."""
-    fixed = sum(c.fixed is True for c in line)
-    ordinary = sum(c.fixed is False for c in line)
+    """ "code" or "sentence". A line whose first piece, before a gap, is in the code font is code: program output
+    with a note beside it ("dist2 = 1.78435 meters  <- this is 5'-10.25"", book page 373). Otherwise a line is a
+    sentence when a fifth or more of its letters and digits are in an ordinary font: a sentence can be full of code
+    words ("tions master_tick() and get_floor_requests() over and over. The wait() function", book page 700),
+    while a line of code has none in an ordinary font, or only an answer's number ("13. cout << setw(10);"). A line
+    of unknown fonts stays code."""
+    letters = [c for c in line if c.text.isalnum()]
+    fixed = sum(c.fixed is True for c in letters)
+    ordinary = sum(c.fixed is False for c in letters)
     first = 1                                            # characters in the line's first piece
     while first < len(line) and line[first].left - line[first - 1].right <= width * _PIECE_GAP:
         first += 1
-    if fixed + ordinary == 0 or (all(c.fixed for c in line[:first]) and first < len(line)):
+    head = line[:first]                                  # the note's arrow has no known font: it does not count
+    if fixed + ordinary == 0 or (first < len(line) and any(c.fixed for c in head)
+                                 and all(c.fixed is not False for c in head)):
         return "code"
-    return "sentence" if ordinary > fixed else "code"
+    return "sentence" if ordinary >= _SENTENCE_SHARE * (fixed + ordinary) else "code"
 
 
 def _part_block(block: Block, kind: str, chars: list[_Char], listing: list[_Char], hyphen: str = "") -> Block:

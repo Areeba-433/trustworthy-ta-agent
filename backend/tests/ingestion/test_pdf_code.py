@@ -554,6 +554,22 @@ def test_a_listing_of_sentences_with_a_few_code_words_is_a_paragraph(listing_pdf
     assert _after_listing(doc, path) == [("paragraph", "which takes one argument of type char")]
 
 
+def test_a_sentence_full_of_code_words_is_still_a_sentence(listing_pdf):
+    """Book page 700: "tions master_tick() and get_floor_requests() over and over. The wait() function" has more
+    letters in the code font than in Times, but it is a sentence: a line of code has no Times words at all."""
+    path, _ = listing_pdf(LISTING + [("inline", "calls the ", "get_floor_requests()")])
+    doc = _book_with_listing((DocItemLabel.CODE, "calls the get_floor_requests()", len(LISTING), len(LISTING)))
+    assert _after_listing(doc, path) == [("paragraph", "calls the get_floor_requests()")]
+
+
+def test_program_output_with_a_note_after_an_arrow_stays_code(listing_pdf):
+    """Book page 256: "someClass() : m1(7), m2(33) <- initializer list". The arrow's font is not known."""
+    path, _ = listing_pdf(LISTING + [("note", "m1(7), m2(33), m3(4)", "<- initializer list")])
+    doc = _book_with_listing((DocItemLabel.CODE, "m1(7), m2(33), m3(4) <- initializer list", len(LISTING),
+                              len(LISTING)))
+    assert _after_listing(doc, path)[0][0] == "code"
+
+
 def test_a_cut_line_is_found_on_a_page_that_does_not_start_at_zero(listing_pdf):
     """Book page 174 itself: the OOP book's pages start at (54, 55). Docling's box, taken as pdfium's, lands on
     an empty part of the page; the box measured from the page's corner is the right one, and it must be tried."""
