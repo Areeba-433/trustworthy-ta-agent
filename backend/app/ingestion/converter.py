@@ -27,7 +27,9 @@ logger = logging.getLogger("tta.ingestion")
 
 PARSER = "docling"
 PARSER_VERSION = version("docling")        # saved in parsed.json: which Docling read each file
-PDF_TIMEOUT_SECONDS = 3600.0               # a safety net for a stuck file, not a speed target: tune after measuring
+# A safety net for a stuck file, not a speed target. Measured on the whole OOP book (1038 pages, CPU only, 31 Oct
+# 2026): Docling stopped at 3600 s with 1004 pages done, 3.6 s a page. Two hours give such a book twice its time.
+PDF_TIMEOUT_SECONDS = 7200.0
 
 _FORMATS = {"pdf": InputFormat.PDF, "docx": InputFormat.DOCX, "pptx": InputFormat.PPTX}
 
@@ -102,7 +104,8 @@ def settings_fingerprint(source_type: str) -> str:
     """12 characters that change whenever docling-core or our settings for this format change, the PDF reader too."""
     # serialize_as_any: Docling types some options as a base class (table_structure_options is one), and without it
     # pydantic writes only the base class's fields: the table mode was left out of the name
-    settings = ({**pdf_options().model_dump(exclude={"accelerator_options"}, serialize_as_any=True),
+    # the time limit is left out too: only complete results are kept, so it never changes one
+    settings = ({**pdf_options().model_dump(exclude={"accelerator_options", "document_timeout"}, serialize_as_any=True),
                  "backend": pdf_backend().__qualname__} if source_type == "pdf" else {})
     text = json.dumps([source_type, version("docling-core"), settings], sort_keys=True, default=_json_fallback)
     return hashlib.sha256(text.encode()).hexdigest()[:12]

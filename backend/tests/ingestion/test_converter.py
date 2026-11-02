@@ -162,10 +162,25 @@ def test_a_damaged_cache_file_is_read_again_and_replaced(tmp_path, data_dir):
 
 def test_the_cache_name_changes_when_our_settings_change(monkeypatch, data_dir):
     before = converter.cache_file("a" * 64, "pdf")
-    monkeypatch.setattr(converter, "PDF_TIMEOUT_SECONDS", 60.0)
+    ours = converter.pdf_options
+
+    def sharper():
+        chosen = ours()
+        chosen.images_scale = 3.0
+        return chosen
+
+    monkeypatch.setattr(converter, "pdf_options", sharper)
     assert converter.cache_file("a" * 64, "pdf") != before
     assert converter.cache_file("a" * 64, "docx") != before
     assert converter.cache_file("a" * 64, "docx") != converter.cache_file("a" * 64, "pptx")
+
+
+def test_the_time_limit_is_not_part_of_the_cache_name(monkeypatch, data_dir):
+    """Only complete results are kept, so the time limit never changes a kept result, and changing the limit must
+    not throw every kept result away."""
+    before = converter.cache_file("a" * 64, "pdf")
+    monkeypatch.setattr(converter, "PDF_TIMEOUT_SECONDS", 60.0)
+    assert converter.cache_file("a" * 64, "pdf") == before
 
 
 def test_the_cache_name_changes_with_the_table_mode(monkeypatch, data_dir):

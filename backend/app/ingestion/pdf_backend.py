@@ -55,6 +55,8 @@ class DoclingParseWordsPdfiumPages(ThreadedDoclingParseDocumentBackend):
 
     def _draw(self, index: int, scale: float = 1, cropbox: BoundingBox | None = None) -> Image.Image:
         with pypdfium2_lock:
+            if self._pdf is None:        # Docling stopped the document (its time limit) while a stage still worked
+                raise RuntimeError("the PDF is closed: Docling stopped this document before the page was drawn")
             return draw_page(self._pdf, index, scale, cropbox)
 
     def unload(self) -> None:

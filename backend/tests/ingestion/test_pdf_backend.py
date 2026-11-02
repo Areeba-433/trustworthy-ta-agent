@@ -3,6 +3,7 @@
 The drawing is pdfium's alone, so these tests need neither docling-parse nor any model. A real PDF through
 docling-parse and the models: test_converter.py, part 4."""
 import pypdfium2 as pdfium
+import pytest
 from docling.backend import docling_parse_backend
 from docling.datamodel.base_models import InputFormat
 from docling_core.types.doc import BoundingBox, CoordOrigin
@@ -64,3 +65,12 @@ def test_docling_parse_still_measures_page_lines_with_its_drawing_off(monkeypatc
         docling_parse_backend._make_docling_parse_page_content_config(create_words=True, compute_shapes=False)
     assert asked == [{"create_words": True, "compute_shapes": True}]
     assert docling_parse_backend._make_docling_parse_page_content_config is docling_s_own      # put back after
+
+
+def test_a_page_asked_for_after_docling_stopped_the_document_gets_a_clear_error():
+    """On the whole OOP book Docling hit its time limit, closed the file, and a stage still busy asked for a page:
+    "'NoneType' object is not subscriptable" said nothing about why."""
+    reader = DoclingParseWordsPdfiumPages.__new__(DoclingParseWordsPdfiumPages)    # as it is after unload()
+    reader._pdf = None
+    with pytest.raises(RuntimeError, match="closed"):
+        reader._draw(0)
