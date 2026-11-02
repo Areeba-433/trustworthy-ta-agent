@@ -519,6 +519,19 @@ def test_a_comment_cut_off_with_the_chapter_tab_goes_back_to_its_line(listing_pd
     assert _after_listing(doc, path) == [("code", "arr[0]->show();      //execute show()\nreturn 0;")]
 
 
+def test_numbered_answers_in_a_region_laid_out_again_are_one_list_item_each(listing_pdf):
+    """Book page 944: the answers "17. a, c", "18. '\\r'", "19. preceding" came out as one paragraph, because
+    Docling's code item of the answers' code overlapped them."""
+    n = len(LISTING)
+    lines = LISTING + [("sentence", "16."), "if( age > 21 )", ("sentence", "17. a, c"), ("sentence", "18. preceding"),
+                       ("sentence", "19."), "switch(ch)"]
+    path, _ = listing_pdf(lines)
+    doc = _book_with_pieces((DocItemLabel.TEXT, "16. 17. a, c 18. preceding 19.", _box(n, n + 4)),
+                            (DocItemLabel.CODE, "if( age > 21 ) switch(ch)", _box(n + 1, n + 5)))
+    assert _after_listing(doc, path) == [("list_item", "16."), ("code", "if( age > 21 )"), ("list_item", "17. a, c"),
+                                         ("list_item", "18. preceding"), ("list_item", "19."), ("code", "switch(ch)")]
+
+
 def test_a_wider_gap_between_lines_of_sentences_starts_a_new_paragraph(listing_pdf):
     n = len(LISTING)
     lines = LISTING + ["int a;", ("sentence", "First paragraph,"), ("sentence", "its second line."), "",

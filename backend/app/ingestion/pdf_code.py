@@ -268,14 +268,17 @@ def _merged(run: Sequence[Block], run_items: list[DocItem], page: _Page, region:
             return None
         gaps = [above[0].y - below[0].y for above, below in zip(lines, lines[1:])]
         usual = statistics.median(gaps) if gaps else math.inf    # the distance from one line to the next
-        out: list[tuple[str, list[list[_Char]]]] = []
+        numbered = _numbered_lines(lines, width)        # book page 944: answers "17. a, c", "18. ..."
+        out: list[tuple[str, bool, list[list[_Char]]]] = []         # (kind, starts a numbered item, lines)
         for n, (kind, line) in enumerate(zip(kinds, lines)):
-            if n and kinds[n - 1] == kind and not (kind == "sentence" and gaps[n - 1] > _PARAGRAPH_GAP * usual):
-                out[-1][1].append(line)
+            item = kind == "sentence" and n in numbered          # code is never cut: a menu "1. Add" is output
+            wide = kind == "sentence" and n and gaps[n - 1] > _PARAGRAPH_GAP * usual
+            if n and kinds[n - 1] == kind and not wide and not item:
+                out[-1][2].append(line)
             else:
-                out.append((kind, [line]))
+                out.append((kind, item, [line]))
         blocks = []
-        for kind, part in out:
+        for kind, item, part in out:
             extra = {**run[0].extra, "merged_from": refs}
             if kind == "code":
                 text = _ascii(_layout([c for line in part for c in line], left))
@@ -283,8 +286,8 @@ def _merged(run: Sequence[Block], run_items: list[DocItem], page: _Page, region:
                                                         "extra": {**extra, "lines_from": "pdf_text"}}))
             else:
                 text = clean_text(" ".join(_joined_words(part, width, hyphen)))
-                blocks.append(run[0].model_copy(update={"kind": "paragraph", "text": text, "lang": detect_lang(text),
-                                                        "extra": extra}))
+                blocks.append(run[0].model_copy(update={"kind": "list_item" if item else "paragraph", "text": text,
+                                                        "lang": detect_lang(text), "extra": extra}))
         return blocks
     return None
 
@@ -325,8 +328,8 @@ def _text_blocks(block: Block, item: DocItem, pdf: pdfium.PdfDocument, pages: di
     choices = ([[marker] + raw] if marker and raw[0] != marker else []) + [raw]
     for box in _boxes(prov.bbox, page):
         chars = [c for c in page.chars if _inside(c, box)]
-        if not chars:
-            continue
+        if not any(c.fixed for c in chars) and not any(c.text.isdigit() for c in chars):
+            continue                                     # no code and no numbered list: nothing to do (quick)
         lines, width = _lines(chars), _width(chars)
         for words_of_item in choices:
             words = _line_words(lines, width, [_ascii(word) for word in words_of_item])
@@ -336,6 +339,7 @@ def _text_blocks(block: Block, item: DocItem, pdf: pdfium.PdfDocument, pages: di
             continue
         kinds = ["code" if _code_font_line(line) else "sentence" for line in lines]
         numbered = _numbered_lines(lines, width) if block.kind in ("paragraph", "list_item") else []
+        numbered = numbered if numbered[:1] == [0] else []     # a list item or paragraph that starts the list
         if ("code" not in kinds and not numbered) or (block.kind == "formula" and "sentence" in kinds):
             return [block]
         counts["text"] += 1
@@ -344,19 +348,21 @@ def _text_blocks(block: Block, item: DocItem, pdf: pdfium.PdfDocument, pages: di
 
 
 def _numbered_lines(lines: list[list[_Char]], width: float) -> list[int]:
-    """The lines after the first that start the next item of a numbered list: the first line starts with "k."
-    and each of these with the next number, "k+1.", "k+2." and so on. Empty when the first line has no number."""
-    first = _words(lines[0], width)
-    number = re.fullmatch(r"(\d{1,3})\.", first[0]) if first else None
-    if number is None:
-        return []
-    expected, starts = int(number.group(1)) + 1, []
-    for n, line in enumerate(lines[1:], start=1):
+    """The lines that start the items of a numbered list: the first line that starts with a number "k." and each
+    later one that starts with the next number, "k+1.", "k+2." and so on. Empty unless there are two or more."""
+    starts, expected = [], None
+    for n, line in enumerate(lines):
         words = _words(line, width)
-        if words and words[0] == f"{expected}.":
+        if not words:
+            continue
+        if expected is None:
+            number = re.fullmatch(r"(\d{1,3})\.", words[0])
+            if number is not None:
+                starts, expected = [n], int(number.group(1)) + 1
+        elif words[0] == f"{expected}.":
             starts.append(n)
             expected += 1
-    return starts
+    return starts if len(starts) > 1 else []
 
 
 def _code_font_line(line: list[_Char]) -> bool:
@@ -394,7 +400,7 @@ def _text_parts(block: Block, lines: list[list[_Char]], kinds: list[str], words:
     left = min((c.left for c in code), default=0.0)
     runs: list[tuple[str, list[int]]] = []
     for n, kind in enumerate(kinds):
-        if runs and runs[-1][0] == kind and n not in numbered:
+        if runs and runs[-1][0] == kind and not (kind == "sentence" and n in numbered):
             runs[-1][1].append(n)
         else:
             runs.append((kind, [n]))
