@@ -168,6 +168,29 @@ def test_a_long_dash_in_the_pdf_matches_docling_s_plain_one(listing_pdf):
     assert rebuilt(doc, path) == "\n".join(LISTING + ["int n;   // a variable-dining-of type Room"])
 
 
+def test_a_paragraph_whose_box_reaches_the_chapter_tab_still_gets_its_code_lines(listing_pdf):
+    """Docling's box of an item can reach the chapter tab on the page's edge (book pages 537 and 543). The tab's
+    letters are no item's words: remove_chapter_tabs() takes them off Docling's text, and here they are left out
+    of the PDF's, so the words still match."""
+    n = len(LISTING)
+    path, _ = listing_pdf(LISTING + [("sentence", "Here's the loop:"), "for(j=0; j<3; j++)", "   cout << j;"],
+                          tab=True)
+    doc = _book_with_listing((DocItemLabel.TEXT, "Here's the loop: for(j=0; j<3; j++) cout << j;", n, n + 2))
+    doc.texts[-1].prov[0].bbox.r = 575                   # the box reaches the tab
+    assert _after_listing(doc, path) == [("paragraph", "Here's the loop:"),
+                                         ("code", "for(j=0; j<3; j++)\n   cout << j;")]
+
+
+def test_a_word_broken_at_the_end_of_a_line_in_a_listing_is_joined_as_docling_joined_it(listing_pdf):
+    """Book page 532: "type-" at the end of a line and "compatible" on the next; Docling has "typecompatible"."""
+    n = len(LISTING)
+    lines = LISTING + ["int a;", ("sentence", "pointers are type-"), ("sentence", "compatible with them.")]
+    path, _ = listing_pdf(lines)
+    for docling in ("typecompatible", "type-compatible"):
+        doc = _book_with_listing((DocItemLabel.CODE, f"int a; pointers are {docling} with them.", n, n + 2))
+        assert _after_listing(doc, path) == [("code", "int a;"), ("paragraph", f"pointers are {docling} with them.")]
+
+
 def test_a_font_s_drawing_pieces_are_dropped():
     """The OOP book draws a long arrow as "←" and three pieces of the Symbol font (U+F8E7), invisible junk."""
     assert _ascii("c1=0 ←\uf8e7\uf8e7\uf8e7 counts") == "c1=0 ← counts"
@@ -288,15 +311,58 @@ def test_a_formula_in_the_code_font_is_code(listing_pdf):
     assert blocks[-1].extra["split_from"] == "formula"
 
 
-def test_a_list_item_becomes_code_only_when_it_is_all_code(listing_pdf):
-    """Book page 307: the program's output "1: 22" came out as list items. An exercise with code below its
-    sentence stays a list item: what belongs to it is for the order rules to sort out."""
+def test_a_list_item_s_code_lines_become_code_and_its_sentence_stays_a_list_item(listing_pdf):
+    """Book page 307: the program's output "1: 22" came out as a list item: all code, so code. Book page 97: an
+    exercise with a line of code below its sentence: the code gets its lines, the exercise stays a list item."""
     n = len(LISTING)
     path, _ = listing_pdf(LISTING + ["1: 22", ("sentence", "1. Write a program like this:"), "int a = 1;"])
     doc = _book_with_listing((DocItemLabel.LIST_ITEM, "1: 22", n, n),
                              (DocItemLabel.LIST_ITEM, "1. Write a program like this: int a = 1;", n + 1, n + 2))
-    kinds = [kind for kind, _ in _after_listing(doc, path)]
-    assert kinds == ["code", "list_item"]
+    assert _after_listing(doc, path) == [("code", "1: 22"), ("list_item", "- 1. Write a program like this:"),
+                                         ("code", "int a = 1;")]
+
+
+def _book_with_numbered_item(label: DocItemLabel, text: str, first: int, last: int) -> DoclingDocument:
+    """LISTING, then a numbered list item as Docling makes it: its number is the marker, not part of its text."""
+    doc = book(squashed(LISTING), _lines_box(0, len(LISTING) - 1))
+    prov = ProvenanceItem(page_no=1, bbox=_lines_box(first, last), charspan=(0, len(text)))
+    if label == DocItemLabel.LIST_ITEM:
+        doc.add_list_item(text, enumerated=True, marker="1.", prov=prov, parent=doc.add_list_group())
+    else:
+        doc.add_text(label, "1. " + text, prov=prov)
+    return doc
+
+
+@pytest.mark.parametrize("label", [DocItemLabel.LIST_ITEM, DocItemLabel.TEXT], ids=["list-item", "paragraph"])
+def test_a_numbered_list_read_as_one_item_becomes_one_item_per_number(listing_pdf, label):
+    """Book page 950: the answers to chapter 5's questions came out as one list item, code and all."""
+    n = len(LISTING)
+    lines = LISTING + [("sentence", "1. d (half credit for b)"), ("sentence", "2. definition"), ("sentence", "3."),
+                       "void foo()", "   { }", ("sentence", "4. declaration, prototype")]
+    path, _ = listing_pdf(lines)
+    doc = _book_with_numbered_item(label, "d (half credit for b) 2. definition 3. void foo() { } 4. declaration, "
+                                          "prototype", n, n + 5)
+    assert _after_listing(doc, path) == [("list_item", "1. d (half credit for b)"), ("list_item", "2. definition"),
+                                         ("list_item", "3."), ("code", "void foo()\n   { }"),
+                                         ("list_item", "4. declaration, prototype")]
+
+
+def test_a_numbered_list_without_code_is_cut_into_items_too(listing_pdf):
+    """Book page 964: "15. d 16. false if there is a conversion routine 17. b ..." as one paragraph."""
+    n = len(LISTING)
+    path, _ = listing_pdf(LISTING + [("sentence", "15. d"), ("sentence", "16. false if there is a routine"),
+                                     ("sentence", "17. b")])
+    doc = _book_with_listing((DocItemLabel.TEXT, "15. d 16. false if there is a routine 17. b", n, n + 2))
+    assert _after_listing(doc, path) == [("list_item", "15. d"), ("list_item", "16. false if there is a routine"),
+                                         ("list_item", "17. b")]
+
+
+def test_a_paragraph_whose_lines_do_not_count_on_stays_whole(listing_pdf):
+    """Only the next number starts an item: "3." after "1." is part of the sentence, as is "2.0"."""
+    n = len(LISTING)
+    path, _ = listing_pdf(LISTING + [("sentence", "1. The first rule, and"), ("sentence", "3. not the next one.")])
+    doc = _book_with_listing((DocItemLabel.TEXT, "1. The first rule, and 3. not the next one.", n, n + 1))
+    assert _after_listing(doc, path) == [("paragraph", "1. The first rule, and 3. not the next one.")]
 
 
 def test_a_sentence_with_a_little_code_in_it_stays_a_paragraph(listing_pdf):
@@ -423,6 +489,45 @@ def test_a_paragraph_whose_box_swallowed_the_one_before_comes_out_in_page_order(
                             (DocItemLabel.TEXT, "The next call to repchar() repchar('=', 23); ======", _box(n, n + 3)))
     assert _after_listing(doc, path) == [("paragraph", "The next call to repchar()"), ("code", "repchar('=', 23);"),
                                          ("paragraph", "tells it to print a line."), ("code", "======")]
+
+
+def test_an_item_of_leftover_words_overlapping_the_items_before_it_brings_them_all_into_page_order(listing_pdf):
+    """Book page 352: Docling's last item on the region held its leftovers ("//display again return Counter(count);
+    COUNTPP3. //constructor, one arg"), with a box over the five items before it. The items one after the other do
+    not overlap each other; only through the last one are they one region."""
+    n = len(LISTING)
+    lines = LISTING + ["int main()", ("sentence", "In this program a single statement"), "return Counter(count);",
+                       ("sentence", "does what all three did."), "Counter(int c) : count(c)    //one arg"]
+    path, _ = listing_pdf(lines)
+    doc = _book_with_pieces((DocItemLabel.CODE, "int main() In this program a single statement", _box(n, n + 1)),
+                            (DocItemLabel.TEXT, "does what all three did.", _box(n + 3, n + 3)),
+                            (DocItemLabel.CODE, "Counter(int c) : count(c)", _box(n + 4, n + 4, 0, 25)),
+                            (DocItemLabel.CODE, "return Counter(count); //one arg", _box(n + 1, n + 4)))
+    assert _after_listing(doc, path) == [("code", "int main()"), ("paragraph", "In this program a single statement"),
+                                         ("code", "return Counter(count);"),
+                                         ("paragraph", "does what all three did."),
+                                         ("code", "Counter(int c) : count(c)    //one arg")]
+
+
+def test_a_comment_cut_off_with_the_chapter_tab_goes_back_to_its_line(listing_pdf):
+    """Book pages 537 and 543: Docling put a comment and the chapter tab beside it into an item of their own; the
+    tab came off (remove_chapter_tabs), and the comment goes back to its line."""
+    n = len(LISTING)
+    path, _ = listing_pdf(LISTING + ["arr[0]->show();      //execute show()", "return 0;"], tab=True)
+    doc = _book_with_pieces((DocItemLabel.CODE, "//execute show()", _box(n, n, 21, 40).model_copy(update={"r": 575})),
+                            (DocItemLabel.CODE, "arr[0]->show(); return 0;", _box(n, n + 1, 0, 16)))
+    assert _after_listing(doc, path) == [("code", "arr[0]->show();      //execute show()\nreturn 0;")]
+
+
+def test_a_wider_gap_between_lines_of_sentences_starts_a_new_paragraph(listing_pdf):
+    n = len(LISTING)
+    lines = LISTING + ["int a;", ("sentence", "First paragraph,"), ("sentence", "its second line."), "",
+                       ("sentence", "Second paragraph.")]
+    path, _ = listing_pdf(lines)
+    doc = _book_with_pieces((DocItemLabel.CODE, "int a; Second paragraph.", _box(n, n + 4)),
+                            (DocItemLabel.TEXT, "First paragraph, its second line.", _box(n + 1, n + 2)))
+    assert _after_listing(doc, path) == [("code", "int a;"), ("paragraph", "First paragraph, its second line."),
+                                         ("paragraph", "Second paragraph.")]
 
 
 def test_overlapping_paragraphs_without_a_line_of_code_are_not_touched(listing_pdf):

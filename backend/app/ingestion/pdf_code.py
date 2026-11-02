@@ -17,6 +17,9 @@ words in Docling's order, or Docling's text is kept. Two things make that check 
 - Docling's boxes can overlap: a piece of a line inside this box that Docling gave to another item is left out.
 - Docling's box can miss part of its own item: when it merges two overlapping regions it keeps one region's box.
   Then the whole page is searched, and the pieces closest to the box are taken.
+- a word broken at the end of a line ("type-" / "compatible") is one word to Docling: its halves are joined.
+- the chapter tab on the page's edge is no part of any listing, but Docling's box can reach it: its characters
+  are left out of the page (pdf_furniture finds them).
 
 Docling's code box often holds sentences too ("Here's the output:", "is better than"). Books print code in a
 fixed-width font, where every letter is equally wide, and sentences in an ordinary one; the PDF names each
@@ -33,6 +36,7 @@ a paragraph. A paragraph changes only when the PDF has exactly Docling's words i
 import ctypes
 import logging
 import math
+import re
 import statistics
 import unicodedata
 from collections import Counter, defaultdict
@@ -46,6 +50,7 @@ from docling_core.types.doc import BoundingBox, CoordOrigin, DocItem, DocItemLab
 
 from app.ingestion.cleaning.common import clean_text, detect_lang
 from app.ingestion.contract import Block
+from app.ingestion.pdf_furniture import tab_characters
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +62,8 @@ _FONT_PAGES = 60       # pages sampled, spread over the file, to tell the fixed-
 _FONT_LETTERS = 40     # letters a font needs on those pages before it is called either
 _SAME_WIDTH = 0.15     # points: two letters this close in width are equally wide
 _OVERLAP = 2.0         # points: boxes of blocks one after the other that overlap more than this, top to bottom
+_RUN_BLOCKS = 20       # at most this many blocks, one after the other on a page, are laid out again together
+_PARAGRAPH_GAP = 1.4   # line distances: a gap this much wider than the usual one between two lines starts a paragraph
 # Docling turns these into plain ASCII in all text; we do the same so both versions can be compared word by word.
 # In code they are wrong anyway: a student who copies “hello” into a compiler gets an error.
 _ASCII = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', "⁄": "/", "\x02": "-",
@@ -139,9 +146,12 @@ def _listing_blocks(block: Block, found: list[_Char] | None, code_font: bool, co
         logger.debug("kept Docling's text for %s: the PDF does not have its words there", block.extra["ref"])
         return [block]
     parts = _parts(found)
+    lines, width = _lines(found), _width(found)
+    # a word broken at the end of a line: Docling joined its halves with the hyphen, or without it
+    hyphen = "-" if Counter(_joined_words(lines, width, "-")) == Counter(_ascii(block.text).split()) else ""
     if code_font and (all(c.fixed is False for c in found) or [kind for kind, _ in parts] == ["sentence"]):
         counts["sentences"] += 1
-        return [_part_block(block, "sentence", found, found)]
+        return [_part_block(block, "sentence", found, found, hyphen)]
     if len(parts) == 1:                                  # the usual case: the whole box is code
         text = _ascii(_layout(found))
         if text == block.text:
@@ -150,7 +160,7 @@ def _listing_blocks(block: Block, found: list[_Char] | None, code_font: bool, co
         return [block.model_copy(update={"text": text, "extra": {**block.extra, "lines_from": "pdf_text"}})]
     counts["rebuilt"] += 1
     counts["split"] += 1
-    return [_part_block(block, kind, chars, found) for kind, chars in parts]
+    return [_part_block(block, kind, chars, found, hyphen) for kind, chars in parts]
 
 
 def _merged_runs(blocks: Sequence[Block], items: dict[str, DocItem], pdf: pdfium.PdfDocument,
@@ -160,29 +170,70 @@ def _merged_runs(blocks: Sequence[Block], items: dict[str, DocItem], pdf: pdfium
     page, whose boxes overlap, in a region with code-font lines. Docling sometimes cuts one region into overlapping
     items: the end of a long line in a second code item (book page 189), a listing's separator line in the paragraph
     below it (page 205), two listings and their sentences interleaved (page 216), a line of code cut in two
-    (page 174), a paragraph whose box swallowed the one before it (page 195). The region is then laid out again
-    from the PDF, line by line, top to bottom."""
+    (page 174), a paragraph whose box swallowed the one before it (page 195), an item of leftover words whose box
+    covers the five items before it (page 352). The region is then laid out again from the PDF, line by line, top
+    to bottom."""
+    places = [_place(block, items, pdf, pages, fonts) for block in blocks]
     runs: dict[int, tuple[int, list[Block]]] = {}
     n = 0
     while n < len(blocks):
-        first = _place(blocks[n], items, pdf, pages, fonts)
-        end, region = n, first[1] if first else None
-        while first and end + 1 < len(blocks):
-            nxt = _place(blocks[end + 1], items, pdf, pages, fonts)
-            if nxt is None or nxt[0] != first[0] or min(region.t, nxt[1].t) - max(region.b, nxt[1].b) <= _OVERLAP:
+        for end, region in _runs_from(places, n):
+            run = blocks[n:end + 1]
+            new = _merged(run, [items[b.extra["ref"]] for b in run], pages[places[n][0]], region)
+            if new is not None:
+                runs[n] = (end, new)
+                counts["merged"] += 1
+                n = end
                 break
-            end, region = end + 1, BoundingBox(l=min(region.l, nxt[1].l), r=max(region.r, nxt[1].r),
-                                               t=max(region.t, nxt[1].t), b=min(region.b, nxt[1].b),
-                                               coord_origin=CoordOrigin.BOTTOMLEFT)
-        run = blocks[n:end + 1]
-        new = _merged(run, [items[b.extra["ref"]] for b in run], pages[first[0]], region) if end > n else None
-        if new is not None:
-            runs[n] = (end, new)
-            counts["merged"] += 1
-            n = end + 1
-        else:
-            n += 1
+        n += 1
     return runs
+
+
+def _runs_from(places: list[tuple[int, BoundingBox] | None], n: int) -> list[tuple[int, BoundingBox]]:
+    """The runs that start at block n, as (last block, region), the biggest first. One: the longest run of blocks
+    on n's page whose boxes are all joined to each other through overlaps, in whatever order Docling put them (book
+    page 352: only the last item overlaps the ones before it). Two: each next block overlaps the region so far."""
+    if places[n] is None:
+        return []
+    page = places[n][0]
+    last = n
+    while last + 1 < len(places) and last + 1 - n < _RUN_BLOCKS and places[last + 1] is not None \
+            and places[last + 1][0] == page:
+        last += 1
+    runs = []
+    for end in range(last, n, -1):                       # the longest joined run
+        boxes = [places[k][1] for k in range(n, end + 1)]
+        if _joined(boxes):
+            runs.append((end, _union(boxes)))
+            break
+    end, region = n, places[n][1]                        # each next block overlapping the region so far
+    while end < last and _overlap(region, places[end + 1][1]) > _OVERLAP:
+        end, region = end + 1, _union([region, places[end + 1][1]])
+    if end > n and (not runs or runs[0][0] != end):
+        runs.append((end, region))
+    return runs
+
+
+def _overlap(a: BoundingBox, b: BoundingBox) -> float:
+    """How far two boxes measured from the page's bottom overlap top to bottom, in points (negative: a gap)."""
+    return min(a.t, b.t) - max(a.b, b.b)
+
+
+def _joined(boxes: list[BoundingBox]) -> bool:
+    """Every box is joined to every other through boxes that overlap top to bottom."""
+    joined, rest = [boxes[0]], boxes[1:]
+    while rest:
+        near = [box for box in rest if any(_overlap(box, other) > _OVERLAP for other in joined)]
+        if not near:
+            return False
+        joined += near
+        rest = [box for box in rest if box not in near]
+    return True
+
+
+def _union(boxes: list[BoundingBox]) -> BoundingBox:
+    return BoundingBox(l=min(b.l for b in boxes), r=max(b.r for b in boxes), t=max(b.t for b in boxes),
+                       b=min(b.b for b in boxes), coord_origin=CoordOrigin.BOTTOMLEFT)
 
 
 def _place(block: Block, items: dict[str, DocItem], pdf: pdfium.PdfDocument, pages: dict[int, _Page | None],
@@ -197,7 +248,8 @@ def _place(block: Block, items: dict[str, DocItem], pdf: pdfium.PdfDocument, pag
 
 def _merged(run: Sequence[Block], run_items: list[DocItem], page: _Page, region: BoundingBox) -> list[Block] | None:
     """The run's region from the PDF as code and paragraphs, top to bottom; None unless the PDF has exactly the
-    run's words in the region (in any order: that is what Docling mixed up)."""
+    run's words in the region (in any order: that is what Docling mixed up). A wider gap between two lines of
+    sentences starts a new paragraph."""
     wanted = Counter(_ascii(w) for item in run_items for w in (getattr(item, "text", "") or
                                                                 getattr(item, "orig", "") or "").split())
     for box in _boxes(region, page):
@@ -205,15 +257,19 @@ def _merged(run: Sequence[Block], run_items: list[DocItem], page: _Page, region:
         if not any(c.fixed for c in chars):              # not here: try the box measured from the page's corner
             continue
         lines, width = _lines(chars), _width(chars)
-        if not any(Counter(_joined_words(lines, width, hyphen)) == wanted for hyphen in ("", "-")):
+        hyphen = next((h for h in ("", "-") if Counter(_joined_words(lines, width, h)) == wanted), None)
+        if hyphen is None:
             continue
         refs = [b.extra["ref"] for b in run]
         left = min(c.left for c in chars if c.fixed)
-        out, kinds = [], [_line_kind(line, width) for line in lines]
+        kinds = [_line_kind(line, width) for line in lines]
         if "code" not in kinds:                          # overlapping paragraphs with no code: not ours to redo
             return None
+        gaps = [above[0].y - below[0].y for above, below in zip(lines, lines[1:])]
+        usual = statistics.median(gaps) if gaps else math.inf    # the distance from one line to the next
+        out: list[tuple[str, list[list[_Char]]]] = []
         for n, (kind, line) in enumerate(zip(kinds, lines)):
-            if n and kinds[n - 1] == kind:
+            if n and kinds[n - 1] == kind and not (kind == "sentence" and gaps[n - 1] > _PARAGRAPH_GAP * usual):
                 out[-1][1].append(line)
             else:
                 out.append((kind, [line]))
@@ -225,7 +281,7 @@ def _merged(run: Sequence[Block], run_items: list[DocItem], page: _Page, region:
                 blocks.append(run[0].model_copy(update={"kind": "code", "text": text, "lang": "code",
                                                         "extra": {**extra, "lines_from": "pdf_text"}}))
             else:
-                text = clean_text("\n".join(" ".join(_words(line, width)) for line in part).replace("\ufffe", "-"))
+                text = clean_text(" ".join(_joined_words(part, width, hyphen)))
                 blocks.append(run[0].model_copy(update={"kind": "paragraph", "text": text, "lang": detect_lang(text),
                                                         "extra": extra}))
         return blocks
@@ -252,31 +308,54 @@ def _joined_words(lines: list[list[_Char]], width: float, hyphen: str) -> list[s
 def _text_blocks(block: Block, item: DocItem, pdf: pdfium.PdfDocument, pages: dict[int, _Page | None],
                  fonts: dict[str, bool], counts: Counter) -> list[Block]:
     """A paragraph, list item or formula with whole lines in the code font: those lines become code, in their
-    place (book page 164: the PARTINIT listing and its output came out as one paragraph). A list item or a formula
-    changes only when it is all code ("1: 22", "day1 = 5;"). Docling's words must be exactly the PDF's words in the
-    box, or nothing changes; the sentences keep Docling's words."""
+    place (book page 164: the PARTINIT listing and its output came out as one paragraph); the sentences keep
+    Docling's words and their kind. A formula changes only when it is all code ("day1 = 5;"). A numbered list that
+    Docling read as one item ("1. d (half credit for b) 2. definition 3. void foo() ...", book page 950) becomes
+    one list item per number. Docling's words must be exactly the PDF's words in the box, or nothing changes; a
+    numbered list item's number counts as one of its words, as the PDF prints it."""
     if len(item.prov) != 1:
         return [block]
     prov = item.prov[0]
     page = _page(pdf, pages, prov.page_no, fonts)
     raw = (getattr(item, "text", "") or getattr(item, "orig", "") or "").split()   # a formula's words: orig
-    wanted = [_ascii(word) for word in raw]
-    if page is None or not raw or not all(wanted):
+    if page is None or not raw or not all(_ascii(word) for word in raw):
         return [block]
+    marker = getattr(item, "marker", "") if getattr(item, "enumerated", False) else ""
+    choices = ([[marker] + raw] if marker and raw[0] != marker else []) + [raw]
     for box in _boxes(prov.bbox, page):
         chars = [c for c in page.chars if _inside(c, box)]
-        if not any(c.fixed for c in chars):
+        if not chars:
             continue
-        lines = _lines(chars)
-        words = _line_words(lines, _width(chars), wanted)
-        if words is None:
+        lines, width = _lines(chars), _width(chars)
+        for words_of_item in choices:
+            words = _line_words(lines, width, [_ascii(word) for word in words_of_item])
+            if words is not None:
+                break
+        else:
             continue
         kinds = ["code" if _code_font_line(line) else "sentence" for line in lines]
-        if "code" not in kinds or (block.kind != "paragraph" and "sentence" in kinds):
+        numbered = _numbered_lines(lines, width) if block.kind in ("paragraph", "list_item") else []
+        if ("code" not in kinds and not numbered) or (block.kind == "formula" and "sentence" in kinds):
             return [block]
         counts["text"] += 1
-        return _text_parts(block, lines, kinds, words, raw)
+        return _text_parts(block, lines, kinds, words, words_of_item, numbered)
     return [block]
+
+
+def _numbered_lines(lines: list[list[_Char]], width: float) -> list[int]:
+    """The lines after the first that start the next item of a numbered list: the first line starts with "k."
+    and each of these with the next number, "k+1.", "k+2." and so on. Empty when the first line has no number."""
+    first = _words(lines[0], width)
+    number = re.fullmatch(r"(\d{1,3})\.", first[0]) if first else None
+    if number is None:
+        return []
+    expected, starts = int(number.group(1)) + 1, []
+    for n, line in enumerate(lines[1:], start=1):
+        words = _words(line, width)
+        if words and words[0] == f"{expected}.":
+            starts.append(n)
+            expected += 1
+    return starts
 
 
 def _code_font_line(line: list[_Char]) -> bool:
@@ -305,15 +384,20 @@ def _line_words(lines: list[list[_Char]], width: float, wanted: list[str]) -> li
     return counts if i == len(pieces) and k == len(wanted) else None
 
 
-def _text_parts(block: Block, lines: list[list[_Char]], kinds: list[str], words: list[int],
-                raw: list[str]) -> list[Block]:
-    left = min(c.left for line, kind in zip(lines, kinds) if kind == "code" for c in line)
+def _text_parts(block: Block, lines: list[list[_Char]], kinds: list[str], words: list[int], raw: list[str],
+                numbered: list[int]) -> list[Block]:
+    """The block cut where its lines change from code to sentences and back, and where a numbered list's next item
+    starts. Code is laid out from the PDF; sentences keep Docling's words. The items of a numbered list are list
+    items; other sentences keep the block's kind."""
+    code = [c for line, kind in zip(lines, kinds) if kind == "code" for c in line]
+    left = min((c.left for c in code), default=0.0)
     runs: list[tuple[str, list[int]]] = []
     for n, kind in enumerate(kinds):
-        if runs and runs[-1][0] == kind:
+        if runs and runs[-1][0] == kind and n not in numbered:
             runs[-1][1].append(n)
         else:
             runs.append((kind, [n]))
+    lead = "- " if block.kind == "list_item" and block.text.startswith("- ") else ""   # an unnumbered item's mark
     out, first = [], 0
     for kind, numbers in runs:
         count = sum(words[n] for n in numbers)
@@ -322,9 +406,10 @@ def _text_parts(block: Block, lines: list[list[_Char]], kinds: list[str], words:
             text = _ascii(_layout([c for n in numbers for c in lines[n]], left))
             out.append(block.model_copy(update={"kind": "code", "text": text, "lang": "code",
                                                 "extra": {**extra, "lines_from": "pdf_text"}}))
-        else:
-            text = clean_text(" ".join(raw[first:first + count]))
-            out.append(block.model_copy(update={"text": text, "lang": detect_lang(text), "extra": extra}))
+        elif count:
+            text = (lead if first == 0 else "") + clean_text(" ".join(raw[first:first + count]))
+            out.append(block.model_copy(update={"kind": "list_item" if numbered else block.kind, "text": text,
+                                                "lang": detect_lang(text), "extra": extra}))
         first += count
     return out
 
@@ -350,13 +435,37 @@ def _found(item: DocItem, docling_text: str, pdf: pdfium.PdfDocument, pages: dic
         return None
     boxes = _boxes(prov.bbox, page)
     for box in boxes:                                    # the usual case: all of Docling's words are in its box
-        found = _matching(_pieces([c for c in page.chars if _inside(c, box)]), wanted)
-        if found:
-            return found[1]
-    everywhere = _pieces(page.chars)                     # the box missed part of the item: look on the whole page
-    choices = [_matching(everywhere, wanted, [_distance(piece, box) for piece, _ in everywhere]) for box in boxes]
-    best = min((choice for choice in choices if choice), default=None, key=lambda choice: choice[0])
-    return best[1] if best else None
+        for pieces in _joined_pieces(_pieces([c for c in page.chars if _inside(c, box)])):
+            found = _matching(pieces, wanted)
+            if found:
+                return found[1]
+    for everywhere in _joined_pieces(_pieces(page.chars)):   # the box missed part of the item: the whole page
+        choices = [_matching(everywhere, wanted, [_distance(piece, box) for piece, _ in everywhere])
+                   for box in boxes]
+        best = min((choice for choice in choices if choice), default=None, key=lambda choice: choice[0])
+        if best:
+            return best[1]
+    return None
+
+
+def _joined_pieces(pieces: list[tuple[list[_Char], list[str]]]) -> list[list[tuple[list[_Char], list[str]]]]:
+    """The pieces as they are, or, when a word is broken at the end of a line (pdfium marks the break with U+FFFE),
+    with its halves joined into one piece, once without the hyphen and once with it: Docling joins them one way or
+    the other ("typecompatible", book page 532). Then both lines belong to one item or neither does."""
+    if not any(words and words[-1].endswith("\ufffe") for _, words in pieces):
+        return [pieces]
+    choices = []
+    for hyphen in ("", "-"):
+        out: list[tuple[list[_Char], list[str]]] = []
+        for piece, words in pieces:
+            if out and out[-1][1] and out[-1][1][-1].endswith("\ufffe") and words and \
+                    abs(piece[0].y - out[-1][0][-1].y) > piece[0].height / 2:      # the first piece of the next line
+                before, after = out[-1]
+                out[-1] = (before + piece, after[:-1] + [after[-1][:-1] + hyphen + words[0]] + words[1:])
+            else:
+                out.append((piece, words))
+        choices.append(out)
+    return choices
 
 
 def _rebuild(item: DocItem, docling_text: str, pdf: pdfium.PdfDocument, pages: dict[int, _Page | None]) -> str:
@@ -403,7 +512,11 @@ def _read_page(pdf: pdfium.PdfDocument, page_no: int, fonts: dict[str, bool] | N
     try:
         chars = []
         spaced = False
+        tab = tab_characters(page, textpage)
         for i in range(textpage.count_chars()):
+            if i in tab:                                 # the chapter tab on the page's edge is no item's text
+                spaced = True
+                continue
             text = textpage.get_text_range(i, 1)
             if not text or text.isspace():               # spaces are rebuilt from the positions, but they mark words:
                 spaced = True                            # letter boxes can reach into the gap ("of type", pdfium 156)
@@ -451,13 +564,12 @@ def _line_kind(line: list[_Char], width: float) -> str:
     return "sentence" if ordinary > fixed else "code"
 
 
-def _part_block(block: Block, kind: str, chars: list[_Char], listing: list[_Char]) -> Block:
+def _part_block(block: Block, kind: str, chars: list[_Char], listing: list[_Char], hyphen: str = "") -> Block:
     if kind == "code":                                   # columns counted from the listing's own left edge
         left = min((c.left for c in listing if c.fixed is not False), default=min(c.left for c in listing))
         text = _ascii(_layout(chars, left))
         return block.model_copy(update={"text": text, "extra": {**block.extra, "lines_from": "pdf_text"}})
-    width = _width(listing)
-    text = clean_text("\n".join(" ".join(_words(line, width)) for line in _lines(chars)))
+    text = clean_text(" ".join(_joined_words(_lines(chars), _width(listing), hyphen)))
     return block.model_copy(update={"kind": "paragraph", "text": text, "lang": detect_lang(text),
                                     "extra": {**block.extra, "split_from": "code"}})
 
@@ -563,7 +675,7 @@ def _layout(chars: list[_Char], left: float | None = None) -> str:
             empty = round(gaps[n - 1] / pitch) - 1                        # a double distance was an empty line
             out += [""] * max(0, min(empty, _MAX_EMPTY_LINES))
         out.append(_line_text(line, left, width))
-    return "\n".join(out)
+    return "\n".join(out).replace("\ufffe", "-")         # pdfium's mark of a line ending in a hyphen
 
 
 def _width(chars: list[_Char]) -> float:

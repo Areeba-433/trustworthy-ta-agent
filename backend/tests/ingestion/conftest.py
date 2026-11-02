@@ -105,9 +105,10 @@ def listing_pdf(tmp_path):
     A line can also be ("sentence", text): a line of Times-Roman in the listing, as books write between two pieces
     of code; ("note", code, note): code, then 12 columns further a note in Times-Roman beside it; or ("inline",
     text, code): a sentence in Times-Roman that ends with a word of code.
-    `corner` is where the page starts in PDF points; one of our real books starts at (54, 55).
+    `corner` is where the page starts in PDF points; one of our real books starts at (54, 55). `tab` adds a chapter
+    tab on the page's right edge beside the listing, like the OOP book's odd pages: "9" and "INHERITANCE" turned.
     Returns (path, box): the listing's box in points from the page's corner, as Docling's default reader reports it."""
-    def make(lines, by_position=False, corner=(0, 0)):
+    def make(lines, by_position=False, corner=(0, 0), tab=False):
         top, step = 700.0, 11.5                                  # first line's baseline; distance between lines
         bottom = top - (len(lines) - 1) * step
         rows = [(72.0, top + 30, "/F2 10", "MULTSHAP draws three shapes:")]       # F1: Courier, F2: Times-Roman
@@ -125,6 +126,9 @@ def listing_pdf(tmp_path):
         dx, dy = corner
         content = "\n".join(f"BT {font} Tf {x + dx} {y + dy} Td ({_pdf_string(text)}) Tj ET"
                             for x, y, font, text in rows if text)
+        if tab:                                                  # turned: reads bottom to top
+            content += (f"\nBT /F2 12 Tf 0 1 -1 0 {560 + dx} {bottom + dy} Tm (INHERITANCE) Tj ET"
+                        f"\nBT /F2 14 Tf {548 + dx} {bottom + 90 + dy} Td (9) Tj ET")
         path = write_pdf(tmp_path / "listing.pdf", [content], fonts=("Courier", "Times-Roman"),
                          mediabox=(dx, dy, dx + 595, dy + 842))
         widest = max((12 + len(line[-1]) if line[0] == "note" else sum(map(len, line[1:]))) if isinstance(line, tuple)

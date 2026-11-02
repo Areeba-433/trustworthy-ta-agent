@@ -8,7 +8,7 @@ from app.ingestion.converter import Conversion
 from app.ingestion.dispatcher import ingest_file
 from app.ingestion.docling_blocks import to_blocks
 from app.ingestion.loaders import pdf
-from app.ingestion.pdf_furniture import chapter_tabs, remove_chapter_tabs
+from app.ingestion.pdf_furniture import chapter_tabs, remove_chapter_tabs, tab_characters
 
 
 # Where Docling puts an item, in points from the page's top-left corner, as it measures
@@ -97,6 +97,31 @@ def test_a_code_listing_loses_the_tab_at_its_end_and_nothing_else(chapter_tab_pd
     doc.add_code("#define TITLE A", prov=_to_tab(chapter_tab_pdf))         # one tab letter is not the tab
     remove_chapter_tabs(doc, chapter_tab_pdf)
     assert _texts(doc) == ["class laborer : public employee { };", "#define TITLE A"]
+
+
+def test_a_separator_line_loses_the_tab_at_its_end(chapter_tab_pdf):
+    """Book page 563: "//////// 11 FUNCTIONS". A line with no letters at all cannot be mixed up with the tab."""
+    doc = DoclingDocument(name="b")
+    doc.add_code("//////////////// 9 INHERITANCE", prov=_to_tab(chapter_tab_pdf))
+    remove_chapter_tabs(doc, chapter_tab_pdf)
+    assert _texts(doc) == ["////////////////"]
+
+
+def test_the_tab_s_characters_are_found_for_the_code_lines(chapter_tab_pdf):
+    """restore_code_lines() leaves them out of the page: the turned letters and the chapter's number."""
+    import pypdfium2 as pdfium
+    pdf = pdfium.PdfDocument(str(chapter_tab_pdf))
+    try:
+        found = []
+        for index in range(len(pdf)):
+            page = pdf[index]
+            textpage = page.get_textpage()
+            found.append("".join(sorted(textpage.get_text_range(i, 1) for i in tab_characters(page, textpage))))
+            textpage.close()
+            page.close()
+    finally:
+        pdf.close()
+    assert found == ["".join(sorted("9INHERITANCE")), ""]
 
 
 def test_a_paragraph_that_ends_with_the_tab_loses_it_and_only_it(chapter_tab_pdf):

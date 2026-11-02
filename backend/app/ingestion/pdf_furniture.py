@@ -101,7 +101,30 @@ def chapter_tabs(path: Path) -> dict[int, Tab]:
     return tabs
 
 
+def tab_characters(page: pdfium.PdfPage, textpage: pdfium.PdfTextPage) -> set[int]:
+    """The indices of the page's chapter tab characters in pdfium's text page (its turned letters and the chapter's
+    number beside them); empty when the page has no tab. Code listings are matched against the PDF without them:
+    a listing's box can reach the tab (book pages 537 and 543)."""
+    return {i for i, _ in _tab_chars(page, textpage)}
+
+
 def _find_tab(page: pdfium.PdfPage, textpage: pdfium.PdfTextPage) -> Tab | None:
+    chars = _tab_chars(page, textpage)
+    if not chars:
+        return None
+    left, bottom, _, top = page.get_cropbox()
+    letters = _letters("".join(textpage.get_text_range(i, 1) for i, _ in chars))
+    # pdfium measures from the PDF's origin; Docling from the visible page's top-left corner
+    box = BoundingBox(l=min(c[0] for _, c in chars) - left, r=max(c[2] for _, c in chars) - left,
+                      t=top - max(c[3] for _, c in chars), b=top - min(c[1] for _, c in chars),
+                      coord_origin=CoordOrigin.TOPLEFT)
+    return Tab(letters, box, top - bottom)
+
+
+def _tab_chars(page: pdfium.PdfPage,
+               textpage: pdfium.PdfTextPage) -> list[tuple[int, tuple[float, float, float, float]]]:
+    """(index, loose box) of each character of the page's chapter tab: the turned letters in the page's outer
+    part, and the upright number just above or below them. Empty when there are too few turned letters."""
     left, bottom, right, top = page.get_cropbox()
     edge = _EDGE * (right - left)
     rotated, upright = [], []
@@ -112,7 +135,7 @@ def _find_tab(page: pdfium.PdfPage, textpage: pdfium.PdfTextPage) -> Tab | None:
         angle = pdfium_c.FPDFText_GetCharAngle(textpage.raw, i)         # radians; -1 when pdfium cannot tell
         (rotated if 0.01 < angle < 6.27 else upright).append((i, box))
     if len(rotated) < _MIN_ROTATED:
-        return None
+        return []
     l, r = min(box[0] for _, box in rotated), max(box[2] for _, box in rotated)
     b, t = min(box[1] for _, box in rotated), max(box[3] for _, box in rotated)
 
@@ -121,13 +144,7 @@ def _find_tab(page: pdfium.PdfPage, textpage: pdfium.PdfTextPage) -> Tab | None:
         beside = l - _NUMBER_SIDE <= x <= r + _NUMBER_SIDE
         return beside and (t <= y <= t + _NUMBER_GAP or b - _NUMBER_GAP <= y <= b)
 
-    chars = rotated + [(i, box) for i, box in upright if is_number(box)]
-    letters = _letters("".join(textpage.get_text_range(i, 1) for i, _ in chars))
-    # pdfium measures from the PDF's origin; Docling from the visible page's top-left corner
-    box = BoundingBox(l=min(c[0] for _, c in chars) - left, r=max(c[2] for _, c in chars) - left,
-                      t=top - max(c[3] for _, c in chars), b=top - min(c[1] for _, c in chars),
-                      coord_origin=CoordOrigin.TOPLEFT)
-    return Tab(letters, box, top - bottom)
+    return rotated + [(i, box) for i, box in upright if is_number(box)]
 
 
 def _stands_on_tab(prov: ProvenanceItem, tab: Tab) -> bool:
@@ -160,15 +177,17 @@ def _only_tab(text: str, tab: Counter) -> bool:
 
 def _without_tab_at_end(text: str, tab: Counter) -> str:
     """The text without the tab's words at its end, if they are there: at least half of the tab's letters.
-    What is left must have a small letter: in text all in capitals, like the heading "MULTIPLE INHERITANCE" on a
-    page whose tab is "9 INHERITANCE", the tab's words cannot be told from the text's own."""
+    What is left must have a small letter, or no letter at all: in text all in capitals, like the heading
+    "MULTIPLE INHERITANCE" on a page whose tab is "9 INHERITANCE", the tab's words cannot be told from the text's
+    own. A listing's separator line "////////" has no letters to mix up (book page 563)."""
     words = text.split()
     cut = len(words)
     while cut and _looks_like_tab(words[cut - 1:]) and not (_letters(" ".join(words[cut - 1:])) - tab):
         cut -= 1
     found = _letters(" ".join(words[cut:]))
     kept = " ".join(words[:cut])
-    if cut == len(words) or sum(found.values()) * 2 < sum(tab.values()) or kept == kept.upper():
+    all_capitals = kept == kept.upper() and any(ch.isalpha() for ch in kept)
+    if cut == len(words) or sum(found.values()) * 2 < sum(tab.values()) or all_capitals:
         return text
     return kept
 
