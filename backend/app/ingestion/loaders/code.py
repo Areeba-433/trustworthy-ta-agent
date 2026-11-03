@@ -43,6 +43,10 @@ _CONTAINER_TYPES = {"namespace_definition", "linkage_specification"}
 # #ifndef / #if / #else blocks (include guards): we look inside them.
 _PREPROC_TYPES = {"preproc_ifdef", "preproc_if", "preproc_else", "preproc_elif", "preproc_elifdef"}
 
+# Tree-sitter wraps code it cannot fully parse (e.g. a missing "}") in an ERROR node.
+# The functions and classes inside are usually fine, so we look inside it too.
+_ERROR_TYPES = {"ERROR"}
+
 _COMMENT_LINE = re.compile(r"^\s*(//|/\*|\*|\*/)")
 
 
@@ -162,8 +166,8 @@ def _collect_namespace_names(node, src: bytes, out: set[str]) -> None:
 # --------------------------------------------------------------------------
 def _collect_units(node, src: bytes, prefix: list[str], known: set[str], out: list[Segment]):
     for child in node.named_children:
-        if child.type in _PREPROC_TYPES:
-            # #ifndef STACK_H ... #endif : look inside, path unchanged
+        if child.type in _PREPROC_TYPES or child.type in _ERROR_TYPES:
+            # #ifndef STACK_H ... #endif, or a part with a syntax error: look inside, path unchanged
             _collect_units(child, src, prefix, known, out)
             continue
         if child.type in _CONTAINER_TYPES:
