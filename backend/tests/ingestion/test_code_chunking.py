@@ -34,7 +34,7 @@ def _text_chunks(path: Path):
 # ------------------------------------------------------------------ code
 def test_code_chunker_is_registered_with_its_name(word_tokens):
     chunked = _code_chunks(SAMPLES / "stack.cpp")
-    assert chunked.chunker == code_chunker.NAME == "code-units/1"
+    assert chunked.chunker == code_chunker.NAME == "code-units/3"
 
 
 def test_one_chunk_per_function_and_class(word_tokens):
@@ -119,12 +119,13 @@ def test_long_function_is_cut_between_lines_with_exact_lines(tmp_path, word_toke
 
 
 def test_glue_that_does_not_fit_stays_alone(tmp_path, word_tokens, monkeypatch):
-    monkeypatch.setattr(code_chunker, "MAX_CHUNK_TOKENS", 20)       # a tiny limit, just for this test
+    # f() fits the limit on its own, but not together with the includes: the includes stay a chunk of their own,
+    # so a whole function is never cut just to make room for glue.
+    monkeypatch.setattr(code_chunker, "MAX_CHUNK_TOKENS", 10)       # a tiny limit, just for this test
     f = tmp_path / "x.cpp"
-    f.write_bytes(b"#include <vector>\n\nint f() {\n  int a = 1; int b = 2; int c = 3; int d = 4;\n  return a;\n}\n")
+    f.write_bytes(b"#include <vector>\n#include <map>\n#include <set>\n\nint f() {\n  return 1;\n}\n")
     drafts = code_chunker.code_drafts(code_loader.load(f, _meta(f)))
-    assert [d.heading_path for d in drafts][0] == ["x.cpp"]           # the #include could not join f()
-
+    assert [d.heading_path for d in drafts] == [["x.cpp"], ["x.cpp", "f()"]]
 
 def test_failed_document_is_not_chunked(tmp_path, word_tokens):
     f = tmp_path / "empty.cpp"
@@ -222,3 +223,51 @@ def test_empty_or_garbage_file_fails_politely_without_chunks(tmp_path, data_dir,
     assert result.chunked is None
     assert result.warnings                                # a message the teacher can read
     assert not chunks_path("bad_file").exists()
+
+    
+
+def test_unclosed_namespace_still_gives_one_chunk_per_function(tmp_path, data_dir, word_tokens):
+    # Inside an include guard, "namespace app {" is never closed: Tree-sitter wraps it all in an ERROR node.
+    f = tmp_path / "unclosed.cpp"
+    f.write_bytes(b"#ifndef APP_H\n#define APP_H\n\nnamespace app {\n\nint add(int a, int b) {\n    return a + b;\n}\n\n"
+                  b"class Box {\npublic:\n    int size() const { return 1; }\n};\n\n"
+                  b"int main() {\n    return add(1, 2);\n}\n\n#endif\n")
+    result = process(f, "unclosed", "c1")
+    names = [c.heading_path[-1] for c in result.chunked.chunks]
+    assert names == ["add(int a, int b)", "class Box", "main()"]
+
+
+def test_long_function_with_repeated_lines_keeps_exact_line_numbers(tmp_path, word_tokens):
+    # Many identical lines ("    }", "        total += 1;"): line numbers must come from position, not search.
+    block = "    if (x > 0) {\n        total += 1;\n    }\n\n"
+    source = "int count(int x) {\n    int total = 0;\n" + block * 120 + "    return total;\n}\n"
+    f = tmp_path / "repeat.cpp"
+    f.write_bytes(source.encode())
+    chunks = _code_chunks(f).chunks
+    file_lines = source.split("\n")
+
+    assert len(chunks) > 1
+    for before, after in zip(chunks, chunks[1:]):
+        assert after.loc.line_start > before.loc.line_end                     # in order, no overlap
+    for c in chunks:
+        piece_lines = [l for l in c.text.split("\n") if l.strip()]
+        assert piece_lines[0] == file_lines[c.loc.line_start - 1]
+        assert piece_lines[-1] == file_lines[c.loc.line_end - 1]
+        assert c.loc.line_end - c.loc.line_start + 1 >= len(piece_lines)
+    assert chunks[-1].loc.line_end == len(source.splitlines())
+
+    
+
+def test_closing_glue_after_a_long_function_joins_its_last_piece(tmp_path, word_tokens):
+    # The function is cut into pieces; "} // namespace app" and "#endif" must not become tiny chunks.
+    body = "".join(f"    total = total + {i} * step; // add part {i} of the sum\n" for i in range(80))
+    source = ("#ifndef APP_H\n#define APP_H\n\nnamespace app {\n\nint sum(int step) {\n    int total = 0;\n"
+              + body + "    return total;\n}\n\n} // namespace app\n\n#endif\n")
+    f = tmp_path / "closing.cpp"
+    f.write_bytes(source.encode())
+    chunks = _code_chunks(f).chunks
+    assert len(chunks) > 1
+    assert all(c.heading_path[-1] == "sum(int step)" for c in chunks)       # no glue-only chunk left
+    assert "} // namespace app" in chunks[-1].text and "#endif" in chunks[-1].text
+    assert chunks[-1].loc.line_end == len(source.splitlines())
+    assert all(c.token_count <= MAX_CHUNK_TOKENS for c in chunks)
