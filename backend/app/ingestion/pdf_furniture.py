@@ -81,6 +81,38 @@ def remove_chapter_tabs(doc: DoclingDocument, path: Path) -> int:
     return changed
 
 
+def remove_contents_and_index(doc: DoclingDocument) -> int:
+    """Leave the book's contents pages and its index out: they list topics and page numbers, and a student's
+    question would match their lists of topics instead of the pages that explain them. Changes `doc` in place;
+    returns how many items it left out.
+
+    Docling recognises a list of topics with page numbers as a "document index" and to_blocks() leaves that out,
+    but the rest of such a page still came through: a title of the contents ("3 Loops and Decisions 75"), the book's
+    running title, and on many index pages whole columns of entries as paragraphs ("containers, 415-419 data
+    hiding, 218 …") or as a table. So every page with a document index is left out entirely, and so is everything
+    from the index's own heading ("Index" on a page with a document index, in the last tenth of the book) to the
+    end. The OOP book: 18 contents pages, 32 index pages."""
+    index_pages = {prov.page_no for table in doc.tables if table.label == DocItemLabel.DOCUMENT_INDEX
+                   for prov in table.prov}
+    if not index_pages:
+        return 0
+    last = max(doc.pages, default=0)
+    index_start = min((item.prov[0].page_no for item in doc.texts
+                       if item.label == DocItemLabel.SECTION_HEADER and item.text.strip().casefold() == "index"
+                       and item.prov and item.prov[0].page_no in index_pages
+                       and item.prov[0].page_no >= 0.9 * last), default=last + 1)
+    left_out = 0
+    for item, _ in doc.iterate_items(traverse_pictures=True):
+        pages = {prov.page_no for prov in getattr(item, "prov", [])}
+        if pages and item.content_layer == ContentLayer.BODY and \
+                all(page in index_pages or page >= index_start for page in pages):
+            item.content_layer = ContentLayer.FURNITURE
+            left_out += 1
+    logger.info("contents and index: %d pages, %d items left out", len(index_pages | set(range(index_start, last + 1))),
+                left_out)
+    return left_out
+
+
 def chapter_tabs(path: Path) -> dict[int, Tab]:
     """{page number: its chapter tab} for every page that has one."""
     tabs: dict[int, Tab] = {}

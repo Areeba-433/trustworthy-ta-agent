@@ -365,6 +365,16 @@ def test_a_paragraph_whose_lines_do_not_count_on_stays_whole(listing_pdf):
     assert _after_listing(doc, path) == [("paragraph", "1. The first rule, and 3. not the next one.")]
 
 
+def test_answers_that_docling_made_one_listing_come_out_one_list_item_each(listing_pdf):
+    """Book page 944: Docling made one code item of the answers 16 to 28 and the code of some of them."""
+    n = len(LISTING)
+    path, _ = listing_pdf(LISTING + [("sentence", "16."), "if( age > 21 )", ("sentence", "17. a, c"),
+                                     ("sentence", "18. preceding"), "switch(ch)"])
+    doc = _book_with_listing((DocItemLabel.CODE, "16. if( age > 21 ) 17. a, c 18. preceding switch(ch)", n, n + 4))
+    assert _after_listing(doc, path) == [("list_item", "16."), ("code", "if( age > 21 )"), ("list_item", "17. a, c"),
+                                         ("list_item", "18. preceding"), ("code", "switch(ch)")]
+
+
 def test_a_sentence_with_a_little_code_in_it_stays_a_paragraph(listing_pdf):
     """Words of code inside a sentence ("x is true whenever x is not 0") do not make its line code."""
     path, _ = listing_pdf(LISTING + [("note", "x", "is true whenever x is not 0")])

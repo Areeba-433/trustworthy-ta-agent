@@ -9,7 +9,7 @@ from app.ingestion.converter import Conversion
 from app.ingestion.dispatcher import ingest_file
 from app.ingestion.docling_blocks import to_blocks
 from app.ingestion.loaders import pdf
-from app.ingestion.pdf_figures import mark_figures, render_figure
+from app.ingestion.pdf_figures import join_caption_lines, mark_figures, render_figure
 
 # The black rectangle of the figure_pdf fixture, as fractions of its 595 x 842 page from the top-left corner
 RECTANGLE = [round(100 / 595, 4), round((842 - 500) / 842, 4), round(400 / 595, 4), round((842 - 300) / 842, 4)]
@@ -66,3 +66,39 @@ def test_the_pdf_loader_marks_figures(listing_pdf, monkeypatch, data_dir):
     doc = ingest_file(path, "r1", "c1")
     assert [b.kind for b in doc.blocks if "figure" in b.extra] == ["figure_text", "caption"]
     assert "figures" in doc.quality.seconds_taken
+
+
+# ======================================================================== a caption's line Docling cut off
+
+def _captioned(label: str, line: DocItemLabel, gap: float = 3, left: float = 91) -> DoclingDocument:
+    """A figure's caption and, right under it, a line Docling made an item of its own."""
+    from docling_core.types.doc import ContentLayer
+    doc = DoclingDocument(name="b")
+    doc.add_page(page_no=1, size=Size(width=595, height=842))
+    doc.add_text(DocItemLabel.CAPTION, label, prov=prov(91, 450, 135, 459))
+    layer = ContentLayer.BODY if line == DocItemLabel.TEXT else ContentLayer.FURNITURE
+    doc.add_text(line, "Passing by reference in the REF program.", content_layer=layer,
+                 prov=prov(left, 450 - gap - 7, left + 131, 450 - gap))
+    doc.add_text(DocItemLabel.TEXT, "Reference arguments are indicated by the ampersand.", prov=prov(91, 400, 417, 409))
+    return doc
+
+
+@pytest.mark.parametrize("line", [DocItemLabel.TEXT, DocItemLabel.PAGE_FOOTER], ids=["paragraph", "footer"])
+def test_a_caption_that_is_only_its_label_gets_its_description_back(line):
+    """69 figures of the OOP book: "FIGURE 5.7" as the caption, its description as a paragraph of its own; book page
+    682: the description at the bottom of the page taken for the footer."""
+    doc = _captioned("FIGURE 5.7", line)
+    assert join_caption_lines(doc) == 1
+    assert [(b.kind, b.text) for b in to_blocks(doc, "pdf", "OOP book")] == [
+        ("caption", "FIGURE 5.7 Passing by reference in the REF program."),
+        ("paragraph", "Reference arguments are indicated by the ampersand.")]
+
+
+@pytest.mark.parametrize("caption, gap, left", [("FIGURE 5.7 Passing by value.", 3, 91), ("FIGURE 5.7", 15, 91),
+                                                ("FIGURE 5.7", 3, 150)], ids=["whole", "far", "elsewhere"])
+def test_a_line_that_is_not_the_caption_s_stays_where_it_is(caption, gap, left):
+    """A caption with its description already, a line further down, or one that does not start where the caption
+    starts."""
+    doc = _captioned(caption, DocItemLabel.TEXT, gap, left)
+    assert join_caption_lines(doc) == 0
+    assert len(to_blocks(doc, "pdf", "OOP book")) == 3

@@ -1,7 +1,10 @@
-"""PDF loader (owner: Minahil). Docling reads the book, remove_chapter_tabs() takes the decoration on the page edges
-out, to_blocks() makes blocks, restore_code_lines() gives code listings their lines back and tells code from
-sentences by font, order_by_position() puts what stands higher on a page first, and mark_figures() notes where each
-figure is, so an answer can show it."""
+"""PDF loader (owner: Minahil). Docling reads the book. On Docling's result: remove_chapter_tabs() takes the decoration
+on the page edges out, remove_contents_and_index() the contents and index pages, join_caption_lines() gives a
+caption back a line Docling took for a footer, and split_long_headings() cuts a heading Docling made of a whole region
+back to the heading. Then to_blocks() makes blocks, restore_code_lines() gives code listings their lines back and
+tells code from sentences by font, mark_exponents() keeps the exponent of a power of ten ("10^308"),
+order_by_position() puts what stands higher on a page first, and mark_figures() notes where each figure is, so an
+answer can show it."""
 from pathlib import Path
 
 from app.ingestion import messages
@@ -11,8 +14,10 @@ from app.ingestion.converter import PARSER, PARSER_VERSION, convert
 from app.ingestion.docling_blocks import to_blocks
 from app.ingestion.documents import parsed_document
 from app.ingestion.pdf_code import restore_code_lines
-from app.ingestion.pdf_figures import mark_figures
-from app.ingestion.pdf_furniture import remove_chapter_tabs
+from app.ingestion.pdf_exponents import mark_exponents
+from app.ingestion.pdf_figures import join_caption_lines, mark_figures
+from app.ingestion.pdf_furniture import remove_chapter_tabs, remove_contents_and_index
+from app.ingestion.pdf_headings import split_long_headings
 from app.ingestion.pdf_order import order_by_position
 from app.ingestion.registry import register
 from app.ingestion.storage import Timer
@@ -28,10 +33,18 @@ def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
     title = title_from_filename(meta.file_name)
     with timer("chapter_tabs"):
         remove_chapter_tabs(conversion.document, path)
+    with timer("contents"):
+        remove_contents_and_index(conversion.document)
+    with timer("captions"):
+        join_caption_lines(conversion.document)
+    with timer("headings"):
+        split_long_headings(conversion.document, path)
     with timer("blocks"):
         blocks = to_blocks(conversion.document, "pdf", title)
     with timer("code_lines"):
         blocks = restore_code_lines(blocks, conversion.document, path)
+    with timer("exponents"):
+        blocks = mark_exponents(blocks, path)
     with timer("order"):
         blocks = order_by_position(blocks, conversion.document)
     with timer("figures"):

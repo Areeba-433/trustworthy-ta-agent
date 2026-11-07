@@ -13,15 +13,51 @@ Docling measures boxes on its own page, which is the visible page (the crop box)
 any PDF reader.
 """
 import io
+import re
 from collections.abc import Sequence
 from pathlib import Path
 
 import pypdfium2 as pdfium
-from docling_core.types.doc import DoclingDocument, PictureItem
+from docling_core.types.doc import ContentLayer, DocItemLabel, DoclingDocument, PictureItem
 
 from app.ingestion.contract import Block
 
 _MARGIN = 6.0           # points around the figure, so a cut-out never clips its edge
+_CAPTION_GAP = 6.0      # points: a line this close under a caption, starting where it starts, is the caption's own
+_SAME_LEFT = 3.0        # points
+_LABEL = re.compile(r"(?i)(?:figure|fig\.|table)\s+[\w.-]+")    # a caption that is only its label: "FIGURE 5.7"
+
+
+def join_caption_lines(doc: DoclingDocument) -> int:
+    """Give a caption that is only its label ("FIGURE 5.7") the line right under it: its description, which Docling
+    made a paragraph of its own (69 figures in the OOP book), or once (book page 682, "Adding verylong numbers.", at
+    the bottom of the page) took for the page's footer. The line must start where the caption starts and stand right
+    under it. The caption then carries the words a student will ask about ("Passing by reference in the REF
+    program"), and the figure's words cannot end up between the label and its description (book page 210). Changes
+    `doc` in place; returns how many captions got their line. Runs before to_blocks()."""
+    lines = [item for item in doc.texts if len(item.prov) == 1 and any(ch.isalpha() for ch in item.text) and (
+        (item.content_layer == ContentLayer.BODY and item.label == DocItemLabel.TEXT)
+        or (item.content_layer == ContentLayer.FURNITURE
+            and item.label in (DocItemLabel.PAGE_FOOTER, DocItemLabel.PAGE_HEADER)))]
+    joined = 0
+    for caption in doc.texts:
+        if caption.label != DocItemLabel.CAPTION or caption.content_layer != ContentLayer.BODY \
+                or len(caption.prov) != 1 or caption.prov[0].page_no not in doc.pages \
+                or not _LABEL.fullmatch(caption.text.strip()):
+            continue
+        page_no = caption.prov[0].page_no
+        height = doc.pages[page_no].size.height
+        above = caption.prov[0].bbox.to_top_left_origin(height)
+        for line in lines:
+            box = line.prov[0].bbox.to_top_left_origin(height)
+            if line.prov[0].page_no == page_no and 0 <= box.t - above.b <= _CAPTION_GAP \
+                    and abs(box.l - above.l) <= _SAME_LEFT:
+                caption.text = f"{caption.text} {line.text}"
+                caption.orig = f"{caption.orig or ''} {line.orig or line.text}".strip()
+                line.content_layer = ContentLayer.FURNITURE            # its words are the caption's now
+                joined += 1
+                break
+    return joined
 
 
 def mark_figures(blocks: Sequence[Block], doc: DoclingDocument) -> list[Block]:

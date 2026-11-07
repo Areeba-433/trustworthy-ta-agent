@@ -88,6 +88,20 @@ def test_the_words_of_a_figure_move_together_with_the_figure(tmp_path):
                              "means intp is a reference."]
 
 
+def test_a_narrow_line_at_the_left_edge_does_not_stop_a_centred_figure(tmp_path):
+    """Book page 210 again: the figure stands at the top, centred; "float& intp" at the left edge does not overlap it
+    sideways, but the paragraph between them spans the page: one column. The figure's words came out between
+    "so float& intp" and "means intp is a reference"."""
+    doc = _book((DocItemLabel.CAPTION, "FIGURE 5.7 Passing by reference.", _prov(300, 320, left=91, right=230)),
+                (DocItemLabel.TEXT, "The & can be taken to mean reference to, so", _prov(330, 350, left=91)),
+                (DocItemLabel.CODE, "float& intp", _prov(360, 368, left=91, right=144)),
+                (DocItemLabel.TEXT, "means intp is a reference.", _prov(380, 400, left=91)))
+    figure = doc.add_picture(prov=_prov(60, 290, left=148, right=428))
+    doc.add_text(DocItemLabel.TEXT, "main()", parent=figure, prov=_prov(150, 160, left=189, right=214))
+    assert _ordered(doc) == ["main()", "FIGURE 5.7 Passing by reference.",
+                             "The & can be taken to mean reference to, so", "float& intp", "means intp is a reference."]
+
+
 def test_the_pdf_loader_puts_blocks_in_page_order(chapter_tab_pdf, monkeypatch, data_dir):
     def docling(path, source_type, file_sha256=None):
         return Conversion(_book((DocItemLabel.TEXT, "Below.", _prov(300, 320)),

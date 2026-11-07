@@ -248,3 +248,45 @@ def test_the_pdf_loader_leaves_the_tab_out(chapter_tab_pdf, monkeypatch, data_di
     doc = ingest_file(chapter_tab_pdf, "r1", "c1")
     assert [b.text for b in doc.blocks] == ["Inheritance lets a class reuse another class."]
     assert "chapter_tabs" in doc.quality.seconds_taken
+
+
+# ======================================================================== contents and index pages
+
+def _book_with_contents_and_index() -> DoclingDocument:
+    """Ten pages: contents on page 1, course text on pages 2 to 8, the index on pages 9 and 10."""
+    from docling_core.types.doc import Size, TableData
+    doc = DoclingDocument(name="book")
+    for page in range(1, 11):
+        doc.add_page(page_no=page, size=Size(width=595, height=842))
+    doc.add_heading("3 Loops and Decisions 75", prov=_prov(1))
+    doc.add_table(data=TableData(num_rows=1, num_cols=1), label=DocItemLabel.DOCUMENT_INDEX, prov=_prov(1))
+    doc.add_text(DocItemLabel.TEXT, "A loop repeats its body.", prov=_prov(5))
+    doc.add_heading("Index", prov=_prov(9))
+    doc.add_table(data=TableData(num_rows=1, num_cols=1), label=DocItemLabel.DOCUMENT_INDEX, prov=_prov(9))
+    doc.add_text(DocItemLabel.TEXT, "containers, 415-419 data hiding, 218", prov=_prov(10))
+    return doc
+
+
+def test_contents_and_index_pages_are_left_out_and_course_text_stays():
+    """The OOP book: what Docling did not take for a document index on those pages still came through: "3 Loops
+    and Decisions 75", index entries as paragraphs ("containers, 415-419 data hiding, 218")."""
+    from app.ingestion.pdf_furniture import remove_contents_and_index
+    doc = _book_with_contents_and_index()
+    assert remove_contents_and_index(doc) == 5
+    assert _texts(doc) == ["A loop repeats its body."]
+
+
+def test_an_index_heading_early_in_the_book_is_course_text():
+    """Only the index at the end of the book is left out: a database book has a chapter about indexes."""
+    from app.ingestion.pdf_furniture import remove_contents_and_index
+    doc = _book_with_contents_and_index()
+    doc.texts[2].prov[0].page_no = 3                     # "Index" on page 3 of 10
+    remove_contents_and_index(doc)
+    assert "Index" in _texts(doc)
+
+
+def test_a_book_without_a_document_index_is_left_as_it_is():
+    from app.ingestion.pdf_furniture import remove_contents_and_index
+    doc = DoclingDocument(name="b")
+    doc.add_text(DocItemLabel.TEXT, "A loop repeats its body.", prov=_prov(1))
+    assert remove_contents_and_index(doc) == 0

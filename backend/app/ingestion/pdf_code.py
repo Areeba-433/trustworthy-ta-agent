@@ -82,6 +82,7 @@ class _Char:
     height: float
     fixed: bool | None = None   # its font is fixed-width (True), ordinary (False), or not known (None)
     spaced: bool = False        # the PDF has a space just before it: a new word begins here
+    font: str = ""              # the font's name, as the PDF gives it
 
 
 @dataclass(frozen=True)
@@ -530,8 +531,9 @@ def _read_page(pdf: pdfium.PdfDocument, page_no: int, fonts: dict[str, bool] | N
                 continue
             # "loose" box: the character's full slot, so in a monospace font every box is exactly one column wide
             left, bottom, right, top = textpage.get_charbox(i, loose=True)
-            fixed = fonts.get(_font_name(textpage, i)) if fonts else None
-            chars.append(_Char(text, left, right, (bottom + top) / 2, top - bottom, fixed, spaced))
+            font = _font_name(textpage, i)
+            fixed = fonts.get(font) if fonts else None
+            chars.append(_Char(text, left, right, (bottom + top) / 2, top - bottom, fixed, spaced, font))
             spaced = False
         left, bottom, _, _ = page.get_cropbox()
         return _Page(page.get_height(), (left, bottom), chars)
@@ -541,17 +543,22 @@ def _read_page(pdf: pdfium.PdfDocument, page_no: int, fonts: dict[str, bool] | N
 
 
 def _parts(chars: list[_Char]) -> list[tuple[str, list[_Char]]]:
-    """The listing as ("code", characters) and ("sentence", characters) parts, top to bottom: each line in an
-    ordinary font is a sentence. Only a listing with characters in a font known to be fixed-width is split."""
+    """The listing as ("code", characters), ("sentence", characters) and ("item", characters) parts, top to bottom:
+    each line in an ordinary font is a sentence, and a sentence that starts with the next number of a numbered list
+    starts an item of it (book page 944: Docling made one listing of the answers 16 to 28 and their code). Only a
+    listing with characters in a font known to be fixed-width is split."""
     if not any(c.fixed for c in chars):                  # no character in a font known to be fixed-width
         return [("code", chars)]
-    lines = _lines(chars)
-    kinds = [_line_kind(line, _width(chars)) for line in lines]
+    lines, width = _lines(chars), _width(chars)
+    kinds = [_line_kind(line, width) for line in lines]
     if "sentence" not in kinds:
         return [("code", chars)]
+    numbered = _numbered_lines(lines, width)
     parts: list[tuple[str, list[_Char]]] = []
-    for kind, line in zip(kinds, lines):
-        if parts and parts[-1][0] == kind:
+    for n, (kind, line) in enumerate(zip(kinds, lines)):
+        if kind == "sentence" and n in numbered:
+            parts.append(("item", list(line)))
+        elif parts and (parts[-1][0] == kind or (kind == "sentence" and parts[-1][0] == "item")):
             parts[-1][1].extend(line)
         else:
             parts.append((kind, list(line)))
@@ -579,13 +586,14 @@ def _line_kind(line: list[_Char], width: float) -> str:
 
 
 def _part_block(block: Block, kind: str, chars: list[_Char], listing: list[_Char], hyphen: str = "") -> Block:
+    """One part of a listing: code laid out in its columns, or a sentence or a numbered list's item as text."""
     if kind == "code":                                   # columns counted from the listing's own left edge
         left = min((c.left for c in listing if c.fixed is not False), default=min(c.left for c in listing))
         text = _ascii(_layout(chars, left))
         return block.model_copy(update={"text": text, "extra": {**block.extra, "lines_from": "pdf_text"}})
     text = clean_text(" ".join(_joined_words(_lines(chars), _width(listing), hyphen)))
-    return block.model_copy(update={"kind": "paragraph", "text": text, "lang": detect_lang(text),
-                                    "extra": {**block.extra, "split_from": "code"}})
+    return block.model_copy(update={"kind": "list_item" if kind == "item" else "paragraph", "text": text,
+                                    "lang": detect_lang(text), "extra": {**block.extra, "split_from": "code"}})
 
 
 def _boxes(bbox: BoundingBox, page: _Page) -> list[BoundingBox]:
