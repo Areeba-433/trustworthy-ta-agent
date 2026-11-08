@@ -271,3 +271,27 @@ def test_closing_glue_after_a_long_function_joins_its_last_piece(tmp_path, word_
     assert "} // namespace app" in chunks[-1].text and "#endif" in chunks[-1].text
     assert chunks[-1].loc.line_end == len(source.splitlines())
     assert all(c.token_count <= MAX_CHUNK_TOKENS for c in chunks)
+
+
+
+def test_text_without_blank_lines_keeps_precise_line_numbers(tmp_path, data_dir, word_tokens):
+    # 300 lines and not one blank line: the loader cuts it into ~150-word blocks at line boundaries,
+    # so each chunk cites a few lines instead of all 300 sharing "lines 1–300".
+    f = tmp_path / "log.txt"
+    f.write_bytes("".join(f"entry {i} the student ran the stack test and wrote down the result\n"
+                          for i in range(1, 301)).encode())
+    chunks = process(f, "log", "c1").chunked.chunks
+    ranges = [(c.loc.line_start, c.loc.line_end) for c in chunks]
+    assert len(ranges) == len(set(ranges)) > 1                              # no two chunks share a range
+    assert all(end - start < 60 for start, end in ranges)
+    assert ranges[0][0] == 1 and ranges[-1][1] == 300
+    for before, after in zip(ranges, ranges[1:]):
+        assert after[0] == before[1] + 1                                     # no line lost, none repeated
+
+
+def test_a_long_markdown_table_is_not_cut(tmp_path, data_dir, word_tokens):
+    rows = "".join(f"| op{i} | cost of operation number {i} in the table |\n" for i in range(60))
+    f = tmp_path / "table.md"
+    f.write_bytes(("# Costs\n\n| Operation | Cost |\n|---|---|\n" + rows).encode())
+    blocks = text_loader.load(f, _meta(f)).blocks
+    assert [b.kind for b in blocks] == ["heading", "table"]

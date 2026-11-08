@@ -30,6 +30,10 @@ _RULE = re.compile(r"^ {0,3}([-*_])(\s*\1){2,}\s*$")
 
 _MARKDOWN_SUFFIXES = {".md", ".markdown"}
 
+# A run of lines with no blank line can be very long (a log, a numbered list, a whole file).
+# We cut it at a line boundary every ~150 words, so every block - and so every chunk - keeps
+# a precise line range for its citation instead of one range covering hundreds of lines.
+_MAX_PARAGRAPH_WORDS = 150
 
 def _decode(raw: bytes) -> str | None:
     for enc in ("utf-8-sig", "cp1252"):
@@ -124,6 +128,10 @@ def split_text(source: str, is_markdown: bool) -> list[dict]:
             buf_start = i
         buf.append(line)
         i += 1
+        if (sum(len(l.split()) for l in buf) >= _MAX_PARAGRAPH_WORDS
+                and not (is_markdown and _TABLE_LINE.match(line))):   # tables stay whole
+            flush(i)
+            buf_start = i
 
     flush(len(lines))
     return pieces
@@ -132,7 +140,7 @@ def split_text(source: str, is_markdown: bool) -> list[dict]:
 # --------------------------------------------------------------------------
 # load(): the department's entry point
 # --------------------------------------------------------------------------
-_PARSER_VERSION = "1"
+_PARSER_VERSION = "2"
 
 
 @register("text")
