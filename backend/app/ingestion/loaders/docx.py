@@ -1,27 +1,21 @@
 import logging
-import os
 import re
-import shutil
 from collections import Counter, defaultdict, deque
-from collections.abc import Callable
-from functools import lru_cache
 from pathlib import Path
-from statistics import median
 from typing import NamedTuple
 
 from docx import Document as WordDocument
 from docx.enum.style import WD_STYLE_TYPE
 from docx.oxml.ns import nsmap, qn
 from docx.text.paragraph import Paragraph
-from docling_core.types.doc import ContentLayer, DocItem, DoclingDocument, PictureItem
-from PIL.Image import Image
+from docling_core.types.doc import DoclingDocument, GroupItem
 
-from app.ingestion import messages
 from app.ingestion.cleaning.common import clean_text, detect_lang, title_from_filename
-from app.ingestion.contract import Block, Location, ParsedDocument, ResourceMeta
+from app.ingestion.contract import Block, ParsedDocument, ResourceMeta
 from app.ingestion.converter import PARSER, PARSER_VERSION, convert
 from app.ingestion.docling_blocks import to_blocks
 from app.ingestion.documents import parsed_document
+from app.ingestion.loaders.docx_flowchart import Flowchart, read_flowcharts
 from app.ingestion.registry import register
 
 logger = logging.getLogger("tta.ingestion")
@@ -43,20 +37,9 @@ _TITLE_WORDS = 12                          # a bold title line is short
 _TITLE_LEVELS = 3                          # bold titles nest at most this deep, bigger font = higher level
 _CAPTION_START = re.compile(r"(fig(ure)?|table|chart|graph|diagram)\b\.?\s*[\d:]", re.IGNORECASE)
 
-# Pictures: the text inside them is read with Tesseract OCR and kept as a figure_text block.
-OCR_SWITCH = "DOCX_PICTURE_OCR"            # set to 0 to turn picture OCR off
-OCR_HEADER = "Text read from a picture (OCR, may contain mistakes):"
-_WINDOWS_TESSERACT = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-_OCR_MIN_SIDE = 40                          # pixels: a smaller picture is an icon or a bullet
-_OCR_MIN_WORDS = 3                          # fewer real words (3+ letters or digits): a photo or a logo
-_OCR_EDGE_LINES = (4, 2)                    # top and bottom lines where window bars and status bars sit
-_OCR_REPEAT_WORDS = 3                       # a line this long already read from an earlier picture is a repeat
-_OCR_OUTLIER_CHARS = 20                     # a line starting this far left of the others is a stray, not code
-_HEX_DUMP = re.compile(r"^\s*\S{3,4}\s+-\s+(?:\S{2}\s+){3}")  # "0020 - 08 f7 ea ...": a hex dump, garbled by OCR
-_OCR_MAX_INDENT = 40                        # characters: further right is a pop-up or a status bar, not indentation
-_OCR_MIN_SCORE = 0.4                        # Tesseract's own confidence; lines below it are left out
-_OCR_LAYERS = {ContentLayer.BODY, ContentLayer.NOTES}
-_BULLET_MISREAD = re.compile(r"^[¢«©°•·▪■●◦*>]\s+")      # how OCR reads a bullet point: written as "- "
+# Flowcharts drawn with Word shapes: their arrows are read from the file (docx_flowchart.py).
+_SHAPE_KINDS = ("paragraph", "heading", "list_item")   # the kinds Docling gives a shape's text
+_SHAPE_GAP = 3                              # blocks: at most this many other blocks between two pieces of a chart
 
 
 class _WordFacts(NamedTuple):
@@ -347,7 +330,28 @@ def _mark_captions(blocks: list[Block], captions: Counter[str]) -> list[Block]:
             captions[key] -= 1
             block = block.model_copy(update={"kind": "caption"})
         out.append(block)
-    return out
+    return _link_captions(out)
+
+
+def _link_captions(blocks: list[Block]) -> list[Block]:
+    """Tie each caption to the picture next to it (contract 2.1).
+
+    Word keeps a caption ("Figure 2: ...") as a paragraph of its own and Docling does not tie it to the
+    picture, so the picture comes as a "[Figure]" placeholder with no words. A caption right below the
+    placeholder (or else right above it) takes its figure_id, and the placeholder goes: the caption now
+    shows that a figure was there. A table's caption is left alone.
+    """
+    out = list(blocks)
+    taken: set[int] = set()
+    for i, block in enumerate(out):
+        if block.kind != "caption" or block.figure_id or block.text.casefold().startswith("table"):
+            continue
+        for j in (i - 1, i + 1):
+            if 0 <= j < len(out) and j not in taken and out[j].kind == "figure":
+                out[i] = block.model_copy(update={"figure_id": out[j].figure_id})
+                taken.add(j)
+                break
+    return [block for k, block in enumerate(out) if k not in taken]
 
 
 def _promote_titles(blocks: list[Block], titles: list[tuple[str, int]], title: str) -> list[Block]:
@@ -379,165 +383,70 @@ def _promote_titles(blocks: list[Block], titles: list[tuple[str, int]], title: s
     return out
 
 
-class OcrLine(NamedTuple):
-    """One line Tesseract read from a picture."""
-    text: str
-    left: int               # pixels from the picture's left edge to the line's first word
-    char_width: float       # average pixels per character in the line
-    score: float            # 0 to 1
+def _plain_words(text: str) -> str:
+    """Letters and digits only, lower case, space around: "Records removed before screening:" contains the
+    piece "before screening" that Docling split off where the bold ends."""
+    return " " + " ".join(re.findall(r"\w+", _norm(text).casefold())) + " "
 
 
-Reader = Callable[[Image], list[OcrLine]]
+def _shape_text_refs(doc: DoclingDocument) -> set[str]:
+    """Ids of the texts Docling took from Word text boxes, i.e. the words inside shapes."""
+    refs: set[str] = set()
+    for item in doc.texts:
+        node = item
+        while node.parent is not None:
+            node = node.parent.resolve(doc)
+            if isinstance(node, GroupItem) and node.name == "textbox":
+                refs.add(item.self_ref)
+                break
+    return refs
 
 
-@lru_cache(maxsize=1)
-def _tesseract() -> Reader | None:
-    """Tesseract through pytesseract, or None when either is missing (pictures are then skipped)."""
+def _flowcharts(path: Path) -> list[Flowchart]:
     try:
-        import pytesseract
-    except ImportError:
-        logger.warning("picture OCR skipped: pytesseract is not installed")
-        return None
-    command = os.environ.get("TESSERACT_CMD") or shutil.which("tesseract")
-    if command is None and os.path.exists(_WINDOWS_TESSERACT):
-        command = _WINDOWS_TESSERACT
-    if command is None:
-        logger.warning("picture OCR skipped: the tesseract program was not found")
-        return None
-    pytesseract.pytesseract.tesseract_cmd = command
-
-    def read(image: Image) -> list[OcrLine]:
-        data = pytesseract.image_to_data(image, config="--psm 6", output_type=pytesseract.Output.DICT)
-        lines: dict[tuple[int, int, int], list[tuple[str, int, int, float]]] = {}
-        for i, word in enumerate(data["text"]):
-            score = float(data["conf"][i])
-            if word.strip() and score >= 0:
-                key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
-                lines.setdefault(key, []).append((word, data["left"][i], data["width"][i], score / 100))
-        out = []
-        for words in lines.values():                     # Tesseract gives lines in reading order
-            letters = sum(len(word) for word, *_ in words)
-            out.append(OcrLine(
-                text=" ".join(word for word, *_ in words), left=words[0][1],
-                char_width=sum(width for _, _, width, _ in words) / max(letters, 1),
-                score=sum(score for *_, score in words) / len(words),
-            ))
-        return out
-    return read
+        return read_flowcharts(path)
+    except Exception:                       # a drawing this reader does not understand must not stop the file
+        logger.warning("flowcharts not read in %s", path.name, exc_info=True)
+        return []
 
 
-def _ocr_reader() -> Reader | None:
-    if os.environ.get(OCR_SWITCH, "1").strip() == "0":
-        return None
-    return _tesseract()
+def _add_flowcharts(blocks: list[Block], charts: list[Flowchart],
+                    shape_refs: set[str]) -> tuple[list[Block], set[str]]:
+    """Put each flowchart, written out with its arrows, where Docling left the loose words of its shapes.
 
-
-def _picture_text(lines: list[OcrLine]) -> str:
-    """The picture's text, line by line. Indentation is rebuilt from where each line starts, because
-    OCR loses it and Python code needs it; it is snapped to the smallest step so levels stay even."""
-    kept = [line for line in lines if line.score >= _OCR_MIN_SCORE and line.text.strip()]
-    if not kept:
-        return ""
-    width = median(line.char_width for line in kept) or 1.0
-    middle = median(line.left for line in kept)
-    near = [line.left for line in kept if (middle - line.left) / width <= _OCR_OUTLIER_CHARS]
-    strays = len(kept) - len(near)
-    left = min(near) if 0 < strays <= max(1, len(kept) // 10) else min(line.left for line in kept)
-    indents = [max(0, round((line.left - left) / width)) for line in kept]
-    indents = [indent if indent <= _OCR_MAX_INDENT else 0 for indent in indents]
-    steps = [indent for indent in indents if indent >= 2]
-    step = min(steps) if steps else 0
-    return "\n".join(
-        (" " * (round(indent / step) * step) if step and indent >= 2 else "") + _BULLET_MISREAD.sub("- ", line.text)
-        for indent, line in zip(indents, kept)
-    )
-
-
-def _pictures(doc: DoclingDocument) -> list[tuple[str, Image | None, list[str]]]:
-    """Every picture in reading order: its Docling id, its image, and the ids of the items before it."""
-    out: list[tuple[str, Image | None, list[str]]] = []
-    before: list[str] = []
-    for item, _ in doc.iterate_items(traverse_pictures=True, included_content_layers=_OCR_LAYERS):
-        if isinstance(item, PictureItem):
-            try:
-                image = item.get_image(doc) or (item.image.pil_image if item.image is not None else None)
-            except Exception:                            # a picture Word can show but Pillow can't open (WMF)
-                logger.warning("picture %s could not be opened", item.self_ref, exc_info=True)
-                image = None
-            out.append((item.self_ref, image, list(before)))
-        elif isinstance(item, DocItem):
-            before.append(item.self_ref)
-    return out
-
-
-def _real_words(text: str) -> int:
-    """Words with at least 3 letters or digits. OCR of a logo or a photo gives scraps like "YZ J"."""
-    return sum(1 for word in text.split() if sum(ch.isalnum() for ch in word) >= 3)
-
-
-def _at_edge(k: int, count: int) -> bool:
-    top, bottom = _OCR_EDGE_LINES
-    return k < top or k >= count - bottom
-
-
-def _bar_key(text: str) -> str:
-    """A window bar's words only (3+ characters): OCR reads its icons and buttons differently each time.
-    Digits are kept, so "ssh bandit0@..." and "ssh bandit1@..." stay different lines."""
-    words = (re.sub(r"\W", "", word).lower() for word in text.split())
-    return " ".join(word for word in words if len(word) >= 3)
-
-
-def _add_picture_text(blocks: list[Block], pictures: list[tuple[str, Image | None, list[str]]],
-                      read: Reader | None, title: str) -> tuple[list[Block], int]:
-    """Put the text read from each picture right after the block before it, in the same section.
-
-    Returns the blocks and how many pictures gave text. Skipped: pictures that are too small or can't be
-    opened, and pictures with fewer than _OCR_MIN_WORDS real words (photos, logos). Left out: lines at the
-    top or bottom that repeat in more than half the pictures (a screenshot's window title and menu bar),
-    lines already read from an earlier picture (a login banner in every screenshot: kept the first time),
-    and hex dumps.
+    Docling gives each paragraph inside a shape as its own block ("Records screened", "(n =3007)", ...) and
+    nothing about the arrows. A block is a piece of a flowchart when it came from a shape and its words are
+    in one of the flowchart's paragraphs (Docling may split a paragraph where the formatting changes).
+    The longest run of such blocks, with at most _SHAPE_GAP other blocks between two of them, is replaced
+    by one figure_text block in the place of the first one. A shape's text elsewhere in the file is kept.
+    Returns the blocks and the ids of the blocks taken out.
     """
-    if read is None or not pictures:
-        return blocks, 0
-    position = {block.extra.get("ref"): i for i, block in enumerate(blocks)}
-    found: list[tuple[str, list[OcrLine], int]] = []       # picture id, its lines, the block before it
-    for ref, image, before in pictures:
-        if image is None or min(image.size) < _OCR_MIN_SIDE:
+    out = list(blocks)
+    taken: set[str] = set()
+    for chart in charts:
+        paragraphs = [words for text in chart.texts if (words := _plain_words(text)).strip()]
+        hits = [i for i, block in enumerate(out)
+                if block.kind in _SHAPE_KINDS and block.extra.get("ref") in shape_refs
+                and (words := _plain_words(block.text)).strip() and any(words in p for p in paragraphs)]
+        if not hits:
+            logger.info("a flowchart was read but Docling has no text from its shapes; left as it was")
             continue
-        lines = [line for line in read(image.convert("RGB")) if line.score >= _OCR_MIN_SCORE and line.text.strip()]
-        index = next((position[r] for r in reversed(before) if r in position), -1)
-        found.append((ref, lines, index))
-    edge_counts: Counter[str] = Counter()
-    for _, lines, _ in found:
-        edge_counts.update({_bar_key(line.text) for k, line in enumerate(lines) if _at_edge(k, len(lines))} - {""})
-    repeated = {key for key, n in edge_counts.items() if len(found) >= 3 and n > len(found) / 2}
-    after: dict[int, list[Block]] = defaultdict(list)       # block index -> picture text blocks after it
-    seen: set[str] = set()                                  # lines read from earlier pictures (a login banner)
-    for ref, lines, index in found:
-        kept = []
-        for k, line in enumerate(lines):
-            key = _bar_key(line.text)
-            if _at_edge(k, len(lines)) and key in repeated:
-                continue                                    # a window bar
-            if key in seen and _real_words(line.text) >= _OCR_REPEAT_WORDS:
-                continue                                    # already read from an earlier picture: kept there once
-            if _HEX_DUMP.match(line.text):
-                continue
-            kept.append(line)
-        seen.update(_bar_key(line.text) for line in lines if _real_words(line.text) >= _OCR_REPEAT_WORDS)
-        text = _picture_text(kept)                          # indentation is measured after the bars are gone
-        if _real_words(text) < _OCR_MIN_WORDS:
-            continue
-        path = blocks[index].heading_path if index >= 0 else [title]
-        after[index].append(Block(
-            seq=0, kind="figure_text", text=f"{OCR_HEADER}\n{text}", heading_path=path, loc=Location(),
-            lang=detect_lang(text), extra={"ref": ref, "source": "ocr"},
-        ))
-    out = list(after.get(-1, []))
-    for i, block in enumerate(blocks):
-        out.append(block)
-        out.extend(after.get(i, []))
-    return out, sum(len(found_here) for found_here in after.values())
+        runs = [[hits[0]]]
+        for i in hits[1:]:
+            if i - runs[-1][-1] <= _SHAPE_GAP + 1:
+                runs[-1].append(i)
+            else:
+                runs.append([i])
+        run = max(runs, key=len)
+        first = out[run[0]]
+        chart_block = Block(
+            seq=0, kind="figure_text", text=chart.text, heading_path=first.heading_path, loc=first.loc,
+            lang=detect_lang(chart.text), extra={"ref": first.extra.get("ref"), "source": "shapes"},
+        )
+        taken.update(out[i].extra.get("ref") for i in run)
+        drop = set(run)
+        out = out[:run[0]] + [chart_block] + [b for i, b in enumerate(out) if i > run[0] and i not in drop]
+    return out, taken
 
 
 @register("docx", heavy=True)
@@ -551,11 +460,10 @@ def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
     blocks = _mark_code(blocks, facts.code)
     blocks = _mark_captions(blocks, facts.captions)
     blocks = _promote_titles(blocks, facts.titles, title)
-    read = _ocr_reader()
-    blocks, pictures_read = _add_picture_text(
-        blocks, _pictures(conversion.document) if read else [], read, title)
+    charts = _flowcharts(path)
+    if charts:
+        blocks, _ = _add_flowcharts(blocks, charts, _shape_text_refs(conversion.document))
     return parsed_document(
         meta, title=title, blocks=blocks, parser=PARSER, parser_version=PARSER_VERSION,
         units_total=len(blocks), problems=conversion.problems,
-        notes=[messages.PICTURE_OCR] if pictures_read else [],
     )

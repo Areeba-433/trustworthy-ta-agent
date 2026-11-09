@@ -6,12 +6,13 @@ from docx import Document
 from docx.oxml import parse_xml
 from docx.oxml.ns import nsdecls, qn
 from docx.shared import Pt
-import os
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 from app.ingestion import messages
 from app.ingestion.contract import Block, Location
-from app.ingestion.loaders.docx import (OCR_HEADER, OcrLine, _add_picture_text, _drop_word_extras,
-                                        _mark_captions, _mark_code, _picture_text, _promote_titles)
+from app.ingestion.loaders.docx import (_add_flowcharts, _drop_word_extras, _link_captions, _mark_captions,
+                                        _mark_code, _promote_titles)
+from app.ingestion.loaders.docx_flowchart import HEADER as FLOWCHART_HEADER
+from app.ingestion.loaders.docx_flowchart import Flowchart, read_flowcharts
 from app.ingestion.pipeline import process
 
 @pytest.fixture
@@ -42,7 +43,7 @@ def test_a_word_file_goes_all_the_way_to_chunks_json(make_docx, data_dir, word_t
     result = process(make_docx(build=_lecture), "w1", "c1")
     assert (result.status, result.warnings) == ("ok", [])
     assert (data_dir / "w1" / "parsed.json").exists() and (data_dir / "w1" / "chunks.json").exists()
-    assert result.chunked.chunker == "docx-sections/1"
+    assert result.chunked.chunker == "docx-sections/2"
     assert all(b.heading_path[0] == result.parsed.title for b in result.parsed.blocks)
     assert all(b.loc == Location() for b in result.parsed.blocks)
 
@@ -277,142 +278,254 @@ def test_bold_titles_become_headings_in_a_file_without_heading_styles(make_docx,
     assert chunks["Pain score 48 hours"] == "Pain was the same on the second day."
 
 
-def test_bold_lines_stay_paragraphs_when_the_file_has_real_headings(make_docx, data_dir, word_tokens):
-    def build(doc):                                         # like the Bandit notes: "Goal:" is only a label
-        doc.add_heading("Level 0", 1)
-        _bold_line(doc, "Goal:", 11)
-        doc.add_paragraph("Log in with ssh.")
-
-    result = process(make_docx(build=build), "w17", "c1")
-    assert [b.text for b in result.parsed.blocks if b.kind == "heading"] == ["Level 0"]
-    assert "Goal:" in [b.text for b in result.parsed.blocks if b.kind == "paragraph"]
-def test_bold_titles_nest_by_font_size_and_set_the_path_of_the_text_below():
-    blocks = [_block("T"), _block("Outcomes"), _block("Pain score 48 hours"), _block("Pain was the same."),
-              _block("Arrhythmia"), _block("No difference.")]
-    titles = [("T", 1), ("Outcomes", 1), ("Pain score 48 hours", 2), ("Arrhythmia", 2)]
-    marked = _promote_titles(blocks, titles, "t")           # "T" has the file title's words: it adds no level
-    assert [(b.kind, b.heading_path) for b in marked] == [
-        ("heading", ["t"]),
-        ("heading", ["t", "Outcomes"]),
-        ("heading", ["t", "Outcomes", "Pain score 48 hours"]),
-        ("paragraph", ["t", "Outcomes", "Pain score 48 hours"]),
-        ("heading", ["t", "Outcomes", "Arrhythmia"]),
-        ("paragraph", ["t", "Outcomes", "Arrhythmia"]),
-    ]
-needs_tesseract = pytest.mark.skipif(
-    shutil.which("tesseract") is None and not os.path.exists(r"C:\Program Files\Tesseract-OCR\tesseract.exe"),
-    reason="picture OCR test: install Tesseract (winget install UB-Mannheim.TesseractOCR)",
-)
-
-
 def _text_picture(path, lines):
     """A screenshot-like picture: black text on white."""
     image = Image.new("RGB", (900, 60 + 50 * len(lines)), "white")
     draw = ImageDraw.Draw(image)
-    font = ImageFont.load_default(size=32)
-    for i, line in enumerate(lines):
-        draw.text((20, 20 + 50 * i), line, fill="black", font=font)
+    for k, line in enumerate(lines):
+        draw.text((20, 30 + 50 * k), line, fill="black")
     image.save(path)
     return path
 
 
-def _lecture_with_screenshot(picture):
+def test_a_picture_adds_no_text_of_its_own(make_docx, data_dir, word_tokens, tmp_path):
+    """No OCR (figures guide): a picture without a caption leaves only a "[Figure]" block with its id."""
+    picture = _text_picture(tmp_path / "shot.png", ["Binary search needs a sorted array"])
+
     def build(doc):
         doc.add_heading("Searching", 1)
         doc.add_paragraph("Before the picture.")
         doc.add_picture(str(picture))
         doc.add_paragraph("After the picture.")
-    return build
-
-
-@needs_tesseract
-def test_text_in_a_picture_is_read_and_placed_after_the_paragraph_before_it(make_docx, data_dir, word_tokens,
-                                                                           tmp_path):
-    picture = _text_picture(tmp_path / "shot.png", ["Binary search needs a sorted array",
-                                                    "and runs in logarithmic time"])
-    result = process(make_docx(build=_lecture_with_screenshot(picture)), "w18", "c1")
-    texts = [b.text for b in result.parsed.blocks]
+    result = process(make_docx(build=build), "w18", "c1")
+    blocks = result.parsed.blocks
+    texts = [b.text for b in blocks]
     i = texts.index("Before the picture.")
-    picture_block = result.parsed.blocks[i + 1]
-    assert picture_block.kind == "figure_text" and picture_block.heading_path[-1] == "Searching"
-    assert "Binary search needs a sorted array" in picture_block.text
+    assert (blocks[i + 1].kind, blocks[i + 1].text, blocks[i + 1].figure_id) == ("figure", "[Figure]", "fig0")
     assert texts[i + 2] == "After the picture."
-    assert (result.status, result.warnings) == ("ok", [messages.PICTURE_OCR])
-
-
-@needs_tesseract
-def test_picture_ocr_can_be_switched_off(make_docx, data_dir, word_tokens, tmp_path, monkeypatch):
-    monkeypatch.setenv("DOCX_PICTURE_OCR", "0")
-    picture = _text_picture(tmp_path / "shot.png", ["Binary search needs a sorted array"])
-    result = process(make_docx(build=_lecture_with_screenshot(picture)), "w19", "c1")
-    assert "figure_text" not in [b.kind for b in result.parsed.blocks]
+    assert not any("Binary search" in t for t in texts)
     assert (result.status, result.warnings) == ("ok", [])
+    assert ["w18:fig0"] in [c.figure_ids for c in result.chunked.chunks]
 
 
-def test_picture_text_keeps_indentation_bullets_and_drops_unsure_lines():
-    lines = [OcrLine("def f(x):", 10, 10.0, 0.9), OcrLine("if x:", 50, 10.0, 0.9),
-             OcrLine("return 1", 90, 10.0, 0.9), OcrLine("~~ noise", 10, 10.0, 0.2),
-             OcrLine("¢ a bullet point", 10, 10.0, 0.9)]
-    assert _picture_text(lines) == "def f(x):\n    if x:\n        return 1\n- a bullet point"
+def test_a_word_caption_takes_the_id_of_the_picture_above_it(make_docx, data_dir, word_tokens, tmp_path):
+    picture = _text_picture(tmp_path / "tree.png", ["root"])
+
+    def build(doc):
+        doc.add_heading("Trees", 1)
+        doc.add_paragraph("A binary tree:")
+        doc.add_picture(str(picture))
+        doc.add_paragraph("Figure 1: a binary tree", style="Caption")
+    result = process(make_docx(build=build), "w19", "c1")
+    blocks = result.parsed.blocks
+    assert [(b.kind, b.text, b.figure_id) for b in blocks if b.figure_id] == [
+        ("caption", "Figure 1: a binary tree", "fig0")]                  # no "[Figure]" left beside it
+    assert ["w19:fig0"] in [c.figure_ids for c in result.chunked.chunks]
 
 
-def test_picture_text_goes_after_the_block_before_it_and_icons_and_logos_are_skipped():
-    def block(ref, text):
-        return Block(seq=0, kind="paragraph", text=text, heading_path=["t", "Sorting"], loc=Location(),
+def test_link_captions_below_then_above_and_never_a_table_caption():
+    def figure(n):
+        return Block(seq=0, kind="figure", text="[Figure]", heading_path=["t"], loc=Location(), figure_id=f"fig{n}")
+    blocks = [figure(0), _block("Figure 1: below", "caption"),
+              _block("Figure 2: above", "caption"), figure(1),
+              _block("Text."), figure(2), _block("Table 1: marks", "caption")]
+    out = _link_captions(blocks)
+    assert [(b.kind, b.text, b.figure_id) for b in out] == [
+        ("caption", "Figure 1: below", "fig0"), ("caption", "Figure 2: above", "fig1"),
+        ("paragraph", "Text.", None), ("figure", "[Figure]", "fig2"), ("caption", "Table 1: marks", None)]
+
+
+# ---------------------------------------------------------------------------------------------------
+# PART C: flowcharts drawn with Word shapes (docx_flowchart.py): boxes, arrows, labels -> one text block
+# ---------------------------------------------------------------------------------------------------
+_EMU = 12700
+_DRAWING_NS = ('xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+               'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+               'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+               'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
+               'xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup" '
+               'xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas" '
+               'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"')
+_URI = {"wsp": "http://schemas.microsoft.com/office/word/2010/wordprocessingShape",
+        "wgp": "http://schemas.microsoft.com/office/word/2010/wordprocessingGroup",
+        "wpc": "http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas"}
+
+
+def _emu(points):
+    return int(round(points * _EMU))
+
+
+def _shape(prst, x, y, w, h, text=None, *, line=False, heads=(False, True), flip=(False, False), sid=None,
+           glue=None):
+    """One Word shape (wps:wsp). In a group or canvas (x, y) is its place; at the top level the anchor places it."""
+    flips = (' flipH="1"' if flip[0] else "") + (' flipV="1"' if flip[1] else "")
+    nv = f'<wps:cNvPr id="{sid}" name="Shape {sid}"/>' if sid else ""
+    if line:
+        st = f'<a:stCxn id="{glue[0]}" idx="0"/>' if glue else ""
+        en = f'<a:endCxn id="{glue[1]}" idx="0"/>' if glue else ""
+        ends = "".join(f'<a:{end} type="triangle"/>' for end, on in zip(("headEnd", "tailEnd"), heads) if on)
+        nv += f'<wps:cNvCnPr>{st}{en}</wps:cNvCnPr>'
+        look = f'<a:ln w="12700"><a:solidFill><a:srgbClr val="000000"/></a:solidFill>{ends}</a:ln>'
+    else:
+        nv += '<wps:cNvSpPr/>'
+        look = '<a:ln w="12700"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:ln>'
+    box = ("<wps:txbx><w:txbxContent>" + "".join(f"<w:p><w:r><w:t>{t}</w:t></w:r></w:p>" for t in text)
+           + "</w:txbxContent></wps:txbx>") if text else ""
+    return (f'<wps:wsp>{nv}<wps:spPr><a:xfrm{flips}><a:off x="{_emu(x)}" y="{_emu(y)}"/>'
+            f'<a:ext cx="{_emu(w)}" cy="{_emu(h)}"/></a:xfrm><a:prstGeom prst="{prst}"><a:avLst/></a:prstGeom>{look}'
+            f'</wps:spPr>{box}<wps:bodyPr/></wps:wsp>')
+
+
+def _drawing(paragraph, kind, inner, x, y, w, h, inline=False):
+    """Put a drawing in a paragraph: x from the text's left edge, y below the paragraph's top (points)."""
+    graphic = f'<a:graphic><a:graphicData uri="{_URI[kind]}">{inner}</a:graphicData></a:graphic>'
+    size = f'<wp:extent cx="{_emu(w)}" cy="{_emu(h)}"/>'
+    if inline:
+        body = f'<wp:inline>{size}<wp:docPr id="900" name="Canvas"/>{graphic}</wp:inline>'
+    else:
+        body = (f'<wp:anchor simplePos="0" relativeHeight="1" behindDoc="0" locked="0" layoutInCell="1" '
+                f'allowOverlap="1"><wp:simplePos x="0" y="0"/>'
+                f'<wp:positionH relativeFrom="column"><wp:posOffset>{_emu(x)}</wp:posOffset></wp:positionH>'
+                f'<wp:positionV relativeFrom="paragraph"><wp:posOffset>{_emu(y)}</wp:posOffset></wp:positionV>'
+                f'{size}<wp:wrapNone/><wp:docPr id="{abs(hash(inner)) % 100000}" name="Shape"/>{graphic}</wp:anchor>')
+    paragraph._p.append(parse_xml(f'<w:r {_DRAWING_NS}><mc:AlternateContent><mc:Choice Requires="wps">'
+                                  f'<w:drawing>{body}</w:drawing></mc:Choice></mc:AlternateContent></w:r>'))
+
+
+# "Is n > 0?": the kind of program flowchart students draw. Shapes: name -> (prst, x, y, w, h, text) in points.
+_FLOW_BOXES = {
+    "start": ("flowChartTerminator", 150, 0, 120, 30, ["Start"]),
+    "input": ("flowChartInputOutput", 140, 60, 140, 34, ["Read number n"]),
+    "check": ("flowChartDecision", 145, 125, 130, 70, ["Is n > 0?"]),
+    "pos": ("flowChartProcess", 20, 235, 130, 34, ['Print "positive"']),
+    "neg": ("flowChartProcess", 270, 235, 130, 34, ['Print "not positive"']),
+    "end": ("flowChartTerminator", 150, 310, 120, 30, ["End"]),
+}
+_FLOW_LINES = [  # prst, x, y, w, h, flips, arrowheads (start, end)
+    ("straightConnector1", 210, 30, 0, 30, (False, False), (False, True)),
+    ("straightConnector1", 210, 94, 0, 31, (False, True), (True, False)),     # drawn upward, head at its start
+    ("bentConnector2", 85, 160, 60, 75, (True, False), (False, True)),        # elbow, drawn right to left
+    ("bentConnector2", 275, 160, 60, 75, (False, False), (False, True)),
+    ("bentConnector2", 85, 269, 65, 56, (False, False), (False, True)),
+    ("bentConnector2", 270, 269, 65, 56, (True, False), (False, True)),
+]
+_FLOW_LABELS = [("Yes", 95, 140), ("No", 300, 140)]
+_FLOW_ARROWS = ['- Start → Read number n', '- Read number n → Is n > 0?',
+                '- Is n > 0? → Print "positive" [Yes]', '- Is n > 0? → Print "not positive" [No]',
+                '- Print "positive" → End', '- Print "not positive" → End']
+
+
+def _arrows(chart):
+    return chart.text.split("Arrows:\n")[1].splitlines()
+
+
+def _loose_flowchart(doc, boxes=_FLOW_BOXES):
+    """Each shape anchored to its own empty paragraph, like Word does when shapes are drawn one by one."""
+    doc.add_heading("Selection", 1)
+    doc.add_paragraph("The flowchart below checks whether a number is positive.")
+    holders = [doc.add_paragraph() for _ in range(8)] + [doc.add_paragraph("(see below)")]
+    holders += [doc.add_paragraph() for _ in range(7)]
+    step = 11 * 1.2207 * 276 / 240 + 10        # one empty paragraph: Calibri 11 pt, this template's spacing
+
+    def put(inner, x, y, w, h):
+        k = min(int(y // step), len(holders) - 1)
+        _drawing(holders[k], "wsp", inner, x, y - k * step, w, h)
+    for prst, x, y, w, h, text in boxes.values():
+        put(_shape(prst, 0, 0, w, h, text), x, y, w, h)
+    for prst, x, y, w, h, flip, heads in _FLOW_LINES:
+        put(_shape(prst, 0, 0, w, h, line=True, flip=flip, heads=heads), x, y, w, h)
+    for text, x, y in _FLOW_LABELS:
+        put(_shape("rect", 0, 0, 30, 16, [text]), x, y, 30, 16)
+    doc.add_paragraph("Figure 1: Checking if a number is positive")
+
+
+def test_a_flowchart_of_loose_shapes_is_read_with_its_arrows_and_labels(make_docx):
+    charts = read_flowcharts(make_docx(build=_loose_flowchart))
+    assert len(charts) == 1
+    assert _arrows(charts[0]) == _FLOW_ARROWS
+    assert charts[0].text.startswith(FLOWCHART_HEADER + "\n- Start\n- Read number n\n- Is n > 0?")
+    assert {"Start", "Is n > 0?", "Yes", "No", "End"} <= set(charts[0].texts)    # to find Docling's copies
+
+
+def test_a_grouped_flowchart_is_read_in_the_group_units(make_docx):
+    def build(doc):
+        doc.add_paragraph("The flowchart below checks whether a number is positive.")
+        def c(x, y, w, h):                     # the group's own units: 2 per point, starting at (20, -10)
+            return 2 * x + 20, 2 * y - 10, 2 * w, 2 * h
+        inner = [_shape(p, *c(x, y, w, h), t, sid=k) for k, (p, x, y, w, h, t) in enumerate(_FLOW_BOXES.values(), 1)]
+        inner += [_shape(p, *c(x, y, w, h), line=True, flip=f, heads=hd, sid=20 + k)
+                  for k, (p, x, y, w, h, f, hd) in enumerate(_FLOW_LINES)]
+        inner += [_shape("rect", *c(x, y, 30, 16), [t], sid=40 + k) for k, (t, x, y) in enumerate(_FLOW_LABELS)]
+        group = (f'<wpg:wgp><wpg:cNvGrpSpPr/><wpg:grpSpPr><a:xfrm><a:off x="0" y="0"/>'
+                 f'<a:ext cx="{_emu(420)}" cy="{_emu(340)}"/><a:chOff x="{_emu(20)}" y="{_emu(-10)}"/>'
+                 f'<a:chExt cx="{_emu(840)}" cy="{_emu(680)}"/></a:xfrm></wpg:grpSpPr>{"".join(inner)}</wpg:wgp>')
+        _drawing(doc.add_paragraph(), "wgp", group, 30, 6, 420, 340)
+    charts = read_flowcharts(make_docx(build=build))
+    assert [_arrows(c) for c in charts] == [_FLOW_ARROWS]
+
+
+def test_glued_connectors_join_the_shapes_they_are_glued_to(make_docx):
+    def build(doc):
+        shapes = [_shape("flowChartProcess", 10, 10, 100, 30, ["Enter password"], sid=1),
+                  _shape("flowChartDecision", 200, 0, 110, 50, ["Correct?"], sid=2),
+                  _shape("flowChartTerminator", 380, 10, 100, 30, ["Dashboard"], sid=3),
+                  # drawn far from the shapes: only Word's glue says what they join
+                  _shape("straightConnector1", 10, 100, 50, 0, line=True, sid=11, glue=(1, 2)),
+                  _shape("straightConnector1", 200, 100, 50, 0, line=True, sid=12, glue=(2, 3))]
+        _drawing(doc.add_paragraph(), "wpc", "<wpc:wpc>" + "".join(shapes) + "</wpc:wpc>", 0, 0, 500, 120,
+                 inline=True)
+    charts = read_flowcharts(make_docx(build=build))
+    assert [_arrows(c) for c in charts] == [["- Enter password → Correct?", "- Correct? → Dashboard"]]
+
+
+def test_shapes_without_arrows_are_not_a_flowchart(make_docx):
+    def build(doc):
+        p = doc.add_paragraph("Read these before the first lab.")
+        _drawing(p, "wsp", _shape("rect", 0, 0, 150, 40, ["Labs start at 9"]), 0, 20, 150, 40)
+        _drawing(p, "wsp", _shape("roundRect", 0, 0, 150, 40, ["Bring your laptop"]), 220, 20, 150, 40)
+        _drawing(p, "wsp", _shape("line", 0, 0, 380, 0, line=True, heads=(False, False)), 0, 80, 380, 0)
+    assert read_flowcharts(make_docx(build=build)) == []
+    assert read_flowcharts(make_docx(build=_lecture)) == []
+
+
+def test_a_text_box_laid_on_an_empty_diamond_names_the_diamond(make_docx):
+    boxes = dict(_FLOW_BOXES, check=("flowChartDecision", 145, 125, 130, 70, None),
+                 check_words=("rect", 175, 150, 70, 20, ["Is n > 0?"]))
+    charts = read_flowcharts(make_docx(build=lambda doc: _loose_flowchart(doc, boxes)))
+    assert [_arrows(c) for c in charts] == [_FLOW_ARROWS]
+
+
+def test_a_flowchart_replaces_the_loose_words_of_its_shapes():
+    def block(ref, text, section="Selection"):
+        return Block(seq=0, kind="paragraph", text=text, heading_path=["t", section], loc=Location(),
                      extra={"ref": ref})
-
-    before, after = block("#/texts/0", "Before."), block("#/texts/2", "After.")
-    screenshot, icon, logo = Image.new("RGB", (400, 100)), Image.new("RGB", (20, 20)), Image.new("RGB", (300, 200))
-    pictures = [("#/pictures/0", screenshot, ["#/texts/0", "#/texts/1"]),   # "#/texts/1" was dropped earlier
-                ("#/pictures/1", icon, ["#/texts/0", "#/texts/1"]),         # too small: not read at all
-                ("#/pictures/2", logo, ["#/texts/0", "#/texts/1"])]         # scraps, no real words: skipped
-
-    def read(image):
-        if image.size == (400, 100):
-            return [OcrLine("Merge sort splits the array in half", 0, 10.0, 0.9)]
-        return [OcrLine("/ Ve “é", 0, 10.0, 0.5), OcrLine("YZ J", 0, 10.0, 0.5), OcrLine("nl ‘ /", 0, 10.0, 0.5)]
-
-    out, count = _add_picture_text([before, after], pictures, read, "t")
-    assert count == 1
-    assert [(b.kind, b.heading_path) for b in out] == [
-        ("paragraph", ["t", "Sorting"]), ("figure_text", ["t", "Sorting"]), ("paragraph", ["t", "Sorting"])]
-    assert out[1].text == OCR_HEADER + "\nMerge sort splits the array in half"
-
-
-def test_window_bars_repeated_across_screenshots_are_left_out():
-    before = Block(seq=0, kind="paragraph", text="Screenshot", heading_path=["t", "Level 0"], loc=Location(),
-                   extra={"ref": "#/texts/0"})
-    content = {400: "ls -la shows hidden files", 401: "cat readme prints the file", 402: "file data shows its type"}
-    pictures = [(f"#/pictures/{width}", Image.new("RGB", (width, 300)), ["#/texts/0"]) for width in content]
-
-    def read(image):
-        return [OcrLine("kali-linux VirtualBox [Running]", 0, 10.0, 0.9),     # the same window bar each time
-                OcrLine(content[image.width], 40, 10.0, 0.9)]
-
-    out, count = _add_picture_text([before], pictures, read, "t")
-    assert count == 3
-    assert [b.text.splitlines()[1:] for b in out[1:]] == [[text] for text in content.values()]
+    blocks = [block("#/texts/0", "Intro."),
+              block("#/texts/1", "Records removed"), block("#/texts/2", "before screening"),   # one paragraph,
+              block("#/texts/3", "(n = 12)"), block("#/texts/4", "A body line between."),     # split by Docling
+              block("#/texts/5", "Records screened"),
+              block("#/texts/6", "Figure 1: the flow")]
+    blocks += [block(f"#/texts/{n}", f"Later text {n}.", "Later") for n in range(7, 11)]
+    blocks += [block("#/texts/11", "Records screened", "Later")]     # same words in a shape further on: kept
+    chart = Flowchart(text=FLOWCHART_HEADER + "\n- Records removed before screening\nArrows:\n- a → b",
+                      texts=["Records removed before screening:", "(n = 12)", "Records screened"])
+    shape_refs = {"#/texts/1", "#/texts/2", "#/texts/3", "#/texts/5", "#/texts/11"}
+    out, taken = _add_flowcharts(blocks, [chart], shape_refs)
+    assert [(b.kind, b.text.splitlines()[0]) for b in out][:4] == [
+        ("paragraph", "Intro."), ("figure_text", FLOWCHART_HEADER), ("paragraph", "A body line between."),
+        ("paragraph", "Figure 1: the flow")]
+    assert out[-1].text == "Records screened" and len(out) == 9
+    assert out[1].heading_path == ["t", "Selection"] and out[1].extra["source"] == "shapes"
+    assert taken == {"#/texts/1", "#/texts/2", "#/texts/3", "#/texts/5"}
 
 
-def test_lines_already_read_in_an_earlier_picture_and_hex_dumps_are_left_out():
-    before = Block(seq=0, kind="paragraph", text="Screenshot", heading_path=["t", "Level 0"], loc=Location(),
-                   extra={"ref": "#/texts/0"})
-    banner = "This machine has a 64bit processor"                     # a login banner in every screenshot
-    pictures = [("#/pictures/0", Image.new("RGB", (400, 300)), ["#/texts/0"]),
-                ("#/pictures/1", Image.new("RGB", (401, 300)), ["#/texts/0"])]
-
-    def read(image):
-        last = "cat readme shows the file" if image.width == 400 else "grep millionth data.txt finds it"
-        return [OcrLine(banner, 0, 10.0, 0.9), OcrLine("0020 - 08 f7 ea c1 f5 61 31 df", 0, 10.0, 0.9),
-                OcrLine(last, 0, 10.0, 0.9)]
-
-    out, count = _add_picture_text([before], pictures, read, "t")
-    assert count == 2
-    assert [b.text.splitlines()[1:] for b in out[1:]] == [
-        [banner, "cat readme shows the file"], ["grep millionth data.txt finds it"]]
-
-
-def test_a_stray_line_far_to_the_left_does_not_indent_all_the_others():
-    lines = [OcrLine(f"line {n} of the terminal output", 600, 10.0, 0.9) for n in range(10)]
-    lines.insert(5, OcrLine("-Wl,-z,norelro disable relro", 300, 10.0, 0.9))
-    assert not any(line.startswith(" ") for line in _picture_text(lines).splitlines())
+def test_a_word_flowchart_becomes_one_figure_text_block_with_its_arrows(make_docx, data_dir, word_tokens):
+    result = process(make_docx(build=_loose_flowchart), "w20", "c1")
+    blocks = result.parsed.blocks
+    texts = [b.text for b in blocks]
+    i = texts.index("The flowchart below checks whether a number is positive.")
+    chart = blocks[i + 1]
+    assert chart.kind == "figure_text" and chart.heading_path[-1] == "Selection"
+    assert chart.text.split("Arrows:\n")[1].splitlines() == _FLOW_ARROWS
+    assert not {"Start", "Read number n", "Yes", "No", "End"} & set(texts)    # no loose shape words left
+    assert "Figure 1: Checking if a number is positive" in texts[i + 2:]
+    assert (result.status, result.warnings) == ("ok", [])
