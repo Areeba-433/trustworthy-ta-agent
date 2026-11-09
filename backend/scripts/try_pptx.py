@@ -77,6 +77,7 @@ class SlideFacts:
     words: int = 0
     connectors: int = 0
     drawn: int = 0
+    drawn_with_text: int = 0
     groups: int = 0
     tables: int = 0
     charts: int = 0
@@ -145,6 +146,7 @@ def read_slides(path: Path) -> list[SlideFacts]:
                 facts.smartart_frames += data is not None and data.get("uri") == DIAGRAM_URI
             elif isinstance(shape, Shape) and shape.shape_type in DRAWN:
                 facts.drawn += 1
+                facts.drawn_with_text += _words(shape) > 0
         for pic in facts.pictures:
             pic.words_around = facts.words
         slides.append(facts)
@@ -386,6 +388,12 @@ def lines(report: dict) -> list[str]:
     out += ["", "== 4. pictures repeated on more than half the slides"]
     out.append(f"{len(repeated)} hash(es)" + "".join(f" | {sha[:8]} on {len(on_slides[sha])} slides"
                                                      for sha in sorted(repeated)))
+    by_pixels = defaultdict(set)
+    for p in pics:
+        if p.pixels != "-":
+            by_pixels[p.pixels].add(p.slide)
+    out.append(f"pictures on 2+ slides: {sum(len(w) > 1 for w in on_slides.values())} by file bytes, "
+               f"{sum(len(w) > 1 for w in by_pixels.values())} by pixels")
     kept = [p for p in pics if not junk(p, repeated)]
     out += ["", "== 5. words around pictures",
             f"under {LOW_TEXT_WORDS} words: {_share(pics)} of all pictures | {_share(kept)} of pictures kept "
@@ -398,7 +406,11 @@ def lines(report: dict) -> list[str]:
     chart = [s.number for s in slides if s.charts]
     out += ["", "== 6. slides to draw whole",
             f"diagram rule (>=1 connector or >={DIAGRAM_MIN_SHAPES} drawn shapes): {len(diagram)} slides {diagram}",
-            f"slides with a chart: {len(chart)} {chart} | either: {len(set(diagram) | set(chart))}"]
+            f"slides with a chart: {len(chart)} {chart} | either: {len(set(diagram) | set(chart))}",
+            f"diagram rule on visible slides: {sum(not slides[n - 1].hidden for n in diagram)} | "
+            f"slides with a connector: {sum(s.connectors > 0 for s in slides)}"]
+    out += [f"  slide {s.number}{' (hidden)' if s.hidden else ''}: connectors {s.connectors}, drawn {s.drawn} "
+            f"({s.drawn_with_text} holding text), pictures {len(s.pictures)}" for s in slides if s.diagram_rule]
     out += ["", "== 7. Docling parse time (team converter)"]
     if "docling" in report:
         d = report["docling"]
