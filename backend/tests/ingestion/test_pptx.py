@@ -16,7 +16,7 @@ from xml.sax.saxutils import escape
 
 import pytest
 from docling_core.types.doc import (BoundingBox, ContentLayer, DocItemLabel, DoclingDocument, GroupItem,
-                                    GroupLabel, ProvenanceItem, Size)
+                                    GroupLabel, ImageRef, ProvenanceItem, Size)
 from lxml import etree
 from PIL import Image
 from pptx import Presentation
@@ -36,6 +36,7 @@ from app.core.config import settings
 from app.ingestion import messages
 from app.ingestion.contract import ParsedDocument, PrecheckResult, ResourceMeta
 from app.ingestion.dispatcher import ingest_file
+from app.ingestion.documents import FileRefused
 from app.ingestion.loaders.pptx import load
 from app.ingestion.registry import is_heavy
 from app.ingestion.storage import parsed_path
@@ -82,8 +83,9 @@ class _Slides:
                           content_layer=ContentLayer.NOTES)
         return self
 
-    def picture(self, slide: int) -> "_Slides":
-        self.doc.add_picture(prov=_prov(slide), parent=self._groups[slide - 1])
+    def picture(self, slide: int, size: tuple[int, int] | None = None) -> "_Slides":
+        image = ImageRef.from_pil(Image.new("RGB", size, "white"), dpi=72) if size else None
+        self.doc.add_picture(prov=_prov(slide), parent=self._groups[slide - 1], image=image)
         return self
 
 
@@ -194,6 +196,18 @@ def test_a_partial_docling_result_is_degraded_and_its_problem_comes_first(load_s
     doc = load_slides(_Slides(2).text(1, "Some text.").picture(2), problems=(messages.PARTIAL,))
     assert doc.quality.status == "degraded"
     assert doc.quality.warnings == [messages.PARTIAL, messages.no_text_units("Slides", [2])]
+
+
+def test_a_title_with_a_picture_is_named_but_a_title_with_an_icon_is_not(load_slides):
+    doc = load_slides(_Slides(3).title(1, "Push").picture(1, size=(640, 360)).title(2, "Pop")
+                      .picture(2, size=(32, 32)).text(3, "Peek reads the top."))
+    assert doc.quality.warnings == [messages.no_text_units("Slides", [1])]   # a title adds no text to a chunk
+
+
+def test_a_deck_whose_only_text_is_titles_is_refused_with_the_no_text_message(load_slides):
+    with pytest.raises(FileRefused) as refused:
+        load_slides(_Slides(2).title(1, "Push").picture(1).title(2, "Pop"))
+    assert refused.value.reason == messages.NO_TEXT_FILE               # not a chunking crash later
 
 
 # ================================================================ part 2: real Docling on a generated deck
@@ -489,6 +503,14 @@ def _write_small_deck(path: Path) -> None:
     deck.save(str(path))
 
 
+def _write_good_deck(path: Path) -> None:
+    deck = Presentation()
+    slide = deck.slides.add_slide(deck.slide_layouts[LAYOUT["title_only"]])
+    slide.shapes.title.text = "Push"
+    _box(slide, ["Adds on top."], top=2)
+    deck.save(str(path))
+
+
 def _write_truncated(path: Path) -> None:
     _write_small_deck(path)
     path.write_bytes(path.read_bytes()[: path.stat().st_size // 2])
@@ -521,6 +543,7 @@ def _write_zip(path: Path) -> None:
     pytest.param(_write_zip, messages.UNREADABLE, id="zip, not a deck"),
     pytest.param(_write_word_file, messages.TYPE_MISMATCH, id="renamed Word file"),
     pytest.param(_write_pictures_only, messages.NO_TEXT_FILE, id="pictures only"),
+    pytest.param(_write_small_deck, messages.NO_TEXT_FILE, id="titles only"),
 ])
 def test_a_broken_or_empty_deck_fails_with_a_teacher_message(data_dir, tmp_path, write, reason):
     path = tmp_path / "upload.pptx"
@@ -547,7 +570,7 @@ def test_a_crash_inside_docling_fails_politely_and_logs_the_traceback(data_dir, 
 
 def test_a_good_deck_goes_all_the_way_through_ingest_file(data_dir, tmp_path):
     path = tmp_path / "upload.pptx"
-    _write_small_deck(path)
+    _write_good_deck(path)
     doc = ingest_file(path, "r1", "c1")
-    assert (doc.quality.status, _rows(doc)) == ("ok", [("heading", "Push", 1)])
+    assert (doc.quality.status, _rows(doc)) == ("ok", [("heading", "Push", 1), ("paragraph", "Adds on top.", 1)])
     assert is_heavy("pptx")                                       # one Docling file at a time: see register()
