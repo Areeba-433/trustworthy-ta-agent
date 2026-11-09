@@ -6,7 +6,9 @@ Each rule answers something measured on Docling 2.134.0 (step 1 of the PPTX plan
 - a slide whose only text is its title, with a picture that is not an icon, is named for the teacher, and a deck
   whose only text is titles is refused: headings add no text, so the chunker would make no chunk (Phase 0);
 - Docling keeps a chart's numbers on the chart's picture, which to_blocks() leaves out: each becomes a table block;
-- hidden slides are kept, and each of their blocks carries extra["hidden"] = True (the contract has no field yet).
+- hidden slides are kept, and each of their blocks carries extra["hidden"] = True (the contract has no field yet);
+- a slide whose title is a plain text box (no title placeholder; 62 of 81 slides in three real decks) gets that
+  text box as its heading, so its chunks cite the slide's topic and not only the deck.
 A coverage audit (_pptx_shapes.audit) puts every shape in "extracted", "skipped:<reason>" or "unknown"; unknown
 shapes are logged by slide number and shape type, never by text.
 Slide numbers, speaker notes and reviewers' comments need no rule here: to_blocks() already handles them.
@@ -34,6 +36,10 @@ SOURCE_TYPE: SourceType = "pptx"
 FOOTER_KIND: BlockKind = "paragraph"    # footers reach us as plain paragraphs; headings and notes are never footers
 SLIDES = "Slides"                       # the unit name messages.no_text_units() expects (plural)
 ICON_SIDE_PX = 64                       # figures plan: a picture with a side under 64 px is an icon, not content
+TITLE_TOP = 0.5                         # a text-box title starts in the upper half of the slide
+TITLE_NEAR_LARGEST = 0.9                # the topmost text this close to the largest wins: a formula may be bigger
+TITLE_OVER_BODY = 1.25                  # and it must be clearly larger than the slide's other text (median)
+TITLE_MAX_WORDS = 15
 
 
 @register("pptx", heavy=True)
@@ -71,7 +77,7 @@ def extract(path: Path, file_sha256: str | None, title: str) -> Extraction:
     deck = _read_deck(path)                                                 # after convert(): the file is sound
     raw = to_blocks(conversion.document, SOURCE_TYPE, title)
     kept = _drop_footers(raw)
-    blocks = _own_slide_headings(kept)
+    blocks = _promote_titles(_own_slide_headings(kept), deck)
     blocks = _insert(blocks, _chart_tables(conversion.document, blocks, title))
     blocks = _mark_hidden(blocks, deck.hidden_slides)
     blocks = [b.model_copy(update={"seq": i}) for i, b in enumerate(blocks)]
@@ -123,6 +129,54 @@ def _own_slide_headings(blocks: list[Block]) -> list[Block]:
         path = [b.heading_path[0]] + [h for h in b.heading_path[1:] if h in headings]
         fixed.append(b if path == b.heading_path else _with_heading_path(b, path))
     return fixed
+
+
+def _promote_titles(blocks: list[Block], deck: shapes.Deck) -> list[Block]:
+    """A slide with no heading whose title is a plain text box: that paragraph becomes the slide's heading.
+
+    Every block of the slide is then cited under it, as under a title placeholder. Like any heading, the title
+    then adds no text to the chunk. A title with the deck's own name is left alone, as to_blocks() does.
+    """
+    on_slide: dict[int, list[int]] = {}
+    for i, b in enumerate(blocks):
+        on_slide.setdefault(_slide(b), []).append(i)
+    out = list(blocks)
+    for slide in deck.slides:
+        here = on_slide.get(slide.number, [])
+        if not here or any(out[i].kind == "heading" for i in here):
+            continue
+        title = _slide_title(slide)
+        match = next((i for i in here if out[i].kind == "paragraph" and title is not None
+                      and shapes.norm(out[i].text) == shapes.norm(title)), None)
+        if match is None or shapes.same_words(out[match].text, out[match].heading_path[0]):
+            continue
+        path = [out[match].heading_path[0], out[match].text]
+        for i in here:
+            fields = {"heading_path": path, **({"kind": "heading"} if i == match else {})}
+            out[i] = Block.model_validate({**out[i].model_dump(), **fields})
+    return out
+
+
+def _slide_title(slide: shapes.Slide) -> str | None:
+    """The text box that looks like the slide's title, or None.
+
+    Among one-paragraph text boxes of up to 15 words starting in the upper half, take the largest font size; the
+    topmost box within 90% of it wins (a formula box under the title may be bigger). It counts only if it is at
+    least 1.25 times the median size of the slide's other text, so a lone text box, or several of one size, is
+    never a title. A placeholder is never a candidate (a title placeholder is a heading already), but its text
+    counts as other text, at the size _pptx_shapes can resolve (the deck's default when the layout sets it).
+    """
+    worded = [s for s in slide.shapes if s.kind == "text" and any(shapes.norm(line) for line in s.lines)]
+    candidates = [s for s in worded if s.placeholder is None and len(s.lines) == 1 and s.top is not None
+                  and s.top < TITLE_TOP and s.size and len(s.lines[0].split()) <= TITLE_MAX_WORDS]
+    if not candidates:
+        return None
+    largest = max(s.size for s in candidates)
+    title = min((s for s in candidates if s.size >= TITLE_NEAR_LARGEST * largest), key=lambda s: s.top)
+    others = sorted(s.size for s in worded if s is not title and s.size)
+    if not others or title.size < TITLE_OVER_BODY * others[len(others) // 2]:
+        return None
+    return title.lines[0]
 
 
 def _with_heading_path(block: Block, heading_path: list[str]) -> Block:

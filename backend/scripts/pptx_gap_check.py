@@ -99,6 +99,11 @@ def notes_with_slide(blocks: list, chunked: Any, slide: int) -> str:
     return "with slide" if together else "own chunk" if chunks_on(chunked, slide) else "no chunk"
 
 
+def under_own_title(blocks: list) -> bool:
+    titles = {b.loc.slide: b.text for b in blocks if b.kind == "heading"}
+    return bool(blocks) and all(b.heading_path[1:2] == [titles.get(b.loc.slide)] for b in blocks)
+
+
 def order_kept(blocks: list) -> bool:
     joined = "\n".join(b.text for b in blocks)
     places = [joined.find(text) for text in TEXTS["order"]]
@@ -124,6 +129,8 @@ CHECKS: dict[str, Callable[[list, Any, int], str]] = {
     "repeated_logo": lambda b, c, s: "",
     "tiny_icon": lambda b, c, s: "",
     "reading_order": lambda b, c, s: f"order kept {yes(order_kept(b))}",
+    "text_box_titles": lambda b, c, s: f"headings {sum(x.kind == 'heading' for x in b)}/2, "
+                                       f"under own title {yes(under_own_title(b))}",
 }
 
 
@@ -134,7 +141,7 @@ def path_check(blocks: list, deck_title: str, titled: bool) -> str:
         return "BAD start"
     if titled and any(b.heading_path[1:2] != [TEXTS["title"]] for b in blocks):
         return "no slide title"
-    return "ok" if titled else "deck only"
+    return "ok" if titled else "deck only" if all(len(b.heading_path) == 1 for b in blocks) else "own titles"
 
 
 # ================================================================ one row per fixture, then the mixed deck by slide

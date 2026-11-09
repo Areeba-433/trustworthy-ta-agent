@@ -28,6 +28,7 @@ EXPECTED: dict[str, Census] = {
     "reading_order": Census(slides=1, textboxes=3),
     "mixed_deck": Census(slides=8, pictures=10, connectors=2, glued_ends=4, autoshapes=6, textboxes=7, groups=2,
                          tables=1, charts=1, notes=1, hidden=1),
+    "text_box_titles": Census(slides=2, textboxes=7),
 }
 
 

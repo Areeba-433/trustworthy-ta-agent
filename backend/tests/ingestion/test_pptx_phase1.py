@@ -112,3 +112,71 @@ def test_the_coverage_summary_holds_numbers_and_shape_types_only(extracted, name
 
     printed = "\n".join(shapes.summary(extracted[name].coverage))
     assert not [text for text in all_texts() if text in printed]
+
+
+# ================================================================ 1.7: slide titles typed in text boxes
+
+def test_a_text_box_title_becomes_the_slide_heading(extracted):
+    texts = TEXTS["box_titles"]
+    assert [(b.loc.slide, b.kind, b.text) for b in extracted["text_box_titles"].blocks] == [
+        (1, "heading", texts["first"]), (1, "paragraph", texts["body"]),
+        (2, "paragraph", texts["kicker"]), (2, "heading", texts["second"]),
+        (2, "paragraph", texts["formula"]), (2, "paragraph", texts["body2"]),
+    ]                                                            # the 90 pt star has no words: never a title
+
+
+def test_every_block_is_cited_under_its_own_slides_title(extracted):
+    found = extracted["text_box_titles"]
+    titles = {1: TEXTS["box_titles"]["first"], 2: TEXTS["box_titles"]["second"]}
+    assert all(b.heading_path == [found.title, titles[b.loc.slide]] for b in found.blocks)
+
+
+@pytest.mark.parametrize("name", ["no_title", "reading_order", "picture_caption"])
+def test_a_lone_box_boxes_of_one_size_or_a_low_caption_are_no_title(extracted, name):
+    assert not any(b.kind == "heading" for b in extracted[name].blocks)
+
+
+def test_font_sizes_come_from_the_paragraph_or_the_run(extracted):
+    first, second = extracted["text_box_titles"].deck.slides
+    assert [sorted(round(s.size) for s in slide.shapes) for slide in (first, second)] == [
+        [18, 29], [12, 14, 28, 30, 90]]
+
+
+@pytest.mark.parametrize(("body", "points"), [
+    pytest.param('<a:lstStyle><a:lvl1pPr><a:defRPr sz="2400"/></a:lvl1pPr></a:lstStyle>'
+                 '<a:p><a:r><a:t>x</a:t></a:r></a:p>', 24.0, id="the shape's list style"),
+    pytest.param('<a:p><a:r><a:t>x</a:t></a:r></a:p>', 20.0, id="the presentation's default"),
+    pytest.param('<a:bodyPr><a:normAutofit fontScale="50000"/></a:bodyPr>'
+                 '<a:p><a:pPr><a:defRPr sz="3000"/></a:pPr><a:r><a:t>x</a:t></a:r></a:p>', 15.0,
+                 id="shrunk to fit"),
+])
+def test_a_size_set_nowhere_on_the_run_is_inherited_like_powerpoint(body, points):
+    from lxml import etree
+
+    from app.ingestion.loaders._pptx_shapes import NS, font_size
+
+    shape = etree.fromstring(f'<p:sp xmlns:p="{NS["p"]}" xmlns:a="{NS["a"]}"><p:txBody>{body}</p:txBody></p:sp>')
+    assert font_size(shape, {1: 20.0}) == points
+
+
+def _box(text: str, points: float, top: float, placeholder: str | None = None):
+    from app.ingestion.loaders._pptx_shapes import Paragraph, Shape
+
+    return Shape(1, "sp (text box)", "text", placeholder, (Paragraph(text),), top=top, size=points)
+
+
+@pytest.mark.parametrize(("boxes", "title"), [
+    pytest.param([("Title words", 28, 0.1), ("Body words here", 14, 0.4)], "Title words", id="clear title"),
+    pytest.param([("Kicker words", 12, 0.05), ("Title words", 28, 0.1), ("Formula words", 30, 0.35),
+                  ("Body words", 14, 0.6)], "Title words", id="a bigger formula below"),
+    pytest.param([("Title words", 30, 0.04), ("Body words", 13, 0.22, "obj")], "Title words",
+                 id="body text in a placeholder"),
+    pytest.param([("Only words", 28, 0.1)], None, id="a lone box"),
+    pytest.param([("One words", 18, 0.1), ("Two words", 18, 0.3)], None, id="one size"),
+    pytest.param([("Low title", 28, 0.6), ("Body words", 14, 0.2)], None, id="starts in the lower half"),
+])
+def test_which_text_box_is_the_title(boxes, title):
+    from app.ingestion.loaders import pptx as loader
+    from app.ingestion.loaders._pptx_shapes import Slide
+
+    assert loader._slide_title(Slide(1, shapes=[_box(*box) for box in boxes])) == title

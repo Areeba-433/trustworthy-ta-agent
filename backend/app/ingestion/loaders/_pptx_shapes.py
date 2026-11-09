@@ -1,6 +1,8 @@
 """One python-pptx pass over a deck, for what Docling does not hand the PowerPoint loader.
 
 - Which slides are hidden.
+- Where each top-level shape starts (as a share of the slide height) and its largest font size, inherited the
+  way PowerPoint does for a text box, so the loader can tell a title typed in a text box from the text under it.
 - Every shape on every slide, walked in the slide XML, groups and mc:AlternateContent included, with its own text,
   so the loader can audit where each shape's content went (audit() below).
 - Text Docling never sees. python-pptx, and so Docling, skips every shape inside mc:AlternateContent, and PowerPoint
@@ -14,7 +16,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -70,6 +72,8 @@ class Shape:
     hidden_from_docling: bool = False           # inside mc:AlternateContent: python-pptx and Docling skip it
     has_equation: bool = False
     picture_fill: bool = False                  # a shape filled with a picture
+    top: float | None = None                    # top edge / slide height; None inside a group (own coordinates)
+    size: float = 0.0                           # largest font size of its text, in points (0: no text)
 
     @property
     def lines(self) -> list[str]:
@@ -98,11 +102,15 @@ def read_deck(path: Path) -> Deck:
     from pptx import Presentation                      # imported here, like the loader's other heavy imports
 
     presentation = Presentation(str(path))
+    height = presentation.slide_height or 1
+    defaults = level_sizes(presentation.part._element.find(_q("p:defaultTextStyle")))
     slides = []
     for number, slide in enumerate(presentation.slides, start=1):
         facts = Slide(number, hidden=slide._element.get("show") in ("0", "false"))
-        for element, hidden_from_docling in _walk(slide.shapes._spTree):
+        for element, hidden_from_docling, top_level in _walk(slide.shapes._spTree):
             shape = _shape(number, element, hidden_from_docling)
+            shape = replace(shape, top=_top(element, height) if top_level else None,
+                            size=font_size(element, defaults))
             facts.shapes.append(shape)
             if shape.kind == "smartart":
                 facts.smartart.append(_smartart_lines(slide.part, element))
@@ -113,21 +121,25 @@ def read_deck(path: Path) -> Deck:
     return Deck(slides)
 
 
-def _walk(container: Any, hidden_from_docling: bool = False):
-    """Every shape element, groups opened. In mc:AlternateContent, the first mc:Choice is what PowerPoint shows."""
+def _walk(container: Any, hidden_from_docling: bool = False, top_level: bool = True):
+    """Every shape element, groups opened. In mc:AlternateContent, the first mc:Choice is what PowerPoint shows.
+
+    Yields (element, hidden from Docling, top level): a shape inside a group has its position in the group's
+    own coordinates, so only top-level shapes get one.
+    """
     for child in container:
         name = _local(child)
         if not name or name in BOOKKEEPING:
             continue
         if name == "grpSp":
-            yield from _walk(child, hidden_from_docling)
+            yield from _walk(child, hidden_from_docling, False)
         elif name == "AlternateContent":
             choice = child.find(_q("mc:Choice"))
             branch = choice if choice is not None else child.find(_q("mc:Fallback"))
             if branch is not None:
-                yield from _walk(branch, True)
+                yield from _walk(branch, True, top_level)
         else:
-            yield child, hidden_from_docling
+            yield child, hidden_from_docling, top_level
 
 
 def _shape(slide: int, element: Any, hidden_from_docling: bool) -> Shape:
@@ -154,6 +166,58 @@ def _shape(slide: int, element: Any, hidden_from_docling: bool) -> Shape:
                      hidden_from_docling=hidden_from_docling)
     kind = {"pic": "picture", "cxnSp": "connector", "contentPart": "ink"}.get(name, "unknown")
     return Shape(slide, f"{prefix}{name}", kind, hidden_from_docling=hidden_from_docling)
+
+
+def _top(element: Any, height: int) -> float | None:
+    offset = element.find(f"{_q('p:spPr')}/{_q('a:xfrm')}/{_q('a:off')}")
+    if offset is None:
+        offset = element.find(f"{_q('p:xfrm')}/{_q('a:off')}")            # graphic frames keep it here
+    return int(offset.get("y", "0")) / height if offset is not None else None
+
+
+# ================================================================ font sizes, inherited as PowerPoint does
+
+def level_sizes(style: Any) -> dict[int, float]:
+    """Font size per list level (1-9), in points, from a list style (a:lstStyle or p:defaultTextStyle)."""
+    sizes: dict[int, float] = {}
+    if style is None:
+        return sizes
+    for level in range(1, 10):
+        default = style.find(f"{_q(f'a:lvl{level}pPr')}/{_q('a:defRPr')}")
+        if default is not None and default.get("sz"):
+            sizes[level] = int(default.get("sz")) / 100
+    return sizes
+
+
+def font_size(element: Any, defaults: dict[int, float]) -> float:
+    """The largest font size of a shape's text, in points.
+
+    For each run: its own size (a:rPr sz), else its paragraph's default (a:pPr/a:defRPr sz, python-pptx's
+    paragraph.font), else the shape's own list style for that level, else the presentation's default text style
+    (p:defaultTextStyle), else 18 pt; then scaled by the shape's shrink-on-overflow factor (a:normAutofit).
+    Placeholders inherit from their layout and master instead, which this does not follow: their titles are
+    headings already.
+    """
+    body = element.find(_q("p:txBody"))
+    if body is None:
+        return 0.0
+    own = level_sizes(body.find(_q("a:lstStyle")))
+    autofit = body.find(f"{_q('a:bodyPr')}/{_q('a:normAutofit')}")
+    scale = int(autofit.get("fontScale", "100000")) / 100000 if autofit is not None else 1.0
+    largest = 0.0
+    for p in body.iterfind(_q("a:p")):
+        props = p.find(_q("a:pPr"))
+        level = int(props.get("lvl", "0")) + 1 if props is not None else 1
+        paragraph = props.find(_q("a:defRPr")) if props is not None else None
+        fallback = (int(paragraph.get("sz")) / 100 if paragraph is not None and paragraph.get("sz")
+                    else own.get(level, defaults.get(level, 18.0)))
+        for run in p.iterfind(_q("a:r")):
+            if not (run.findtext(_q("a:t")) or "").strip():
+                continue
+            props = run.find(_q("a:rPr"))
+            size = int(props.get("sz")) / 100 if props is not None and props.get("sz") else fallback
+            largest = max(largest, size * scale)
+    return largest
 
 
 def _paragraph(p: Any) -> Paragraph:

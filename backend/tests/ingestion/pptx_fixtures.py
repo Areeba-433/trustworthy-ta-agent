@@ -55,6 +55,9 @@ TEXTS = {                     # every string any deck contains; tests check none
     "chart": {"categories": ["Cat one", "Cat two", "Cat three"], "series": ["Series one", "Series two"]},
     "loose": "Only a text box",
     "order": ["Order first", "Order second", "Order third"],
+    "box_titles": {"first": "Fixture text box title", "body": "Body sentence under the text box title",
+                   "symbol": "\u2605", "kicker": "FIXTURE KICKER LABEL", "second": "Second fixture slide title",
+                   "formula": "Fixture formula line", "body2": "Second body sentence for the fixture"},
 }
 
 
@@ -234,6 +237,31 @@ def add_reading_order(deck: Deck) -> Slide:
     return slide
 
 
+def _sized_box(slide: Slide, text: str, top: float, points: int, on_paragraph: bool, left: float = 0.6) -> None:
+    """A text box whose font size is set on the paragraph (a:pPr/a:defRPr) or on the run (a:rPr)."""
+    paragraph = _textbox(slide.shapes, text, left=left, top=top, width=8.5, height=0.8).text_frame.paragraphs[0]
+    font = paragraph.font if on_paragraph else paragraph.runs[0].font
+    font.size = Pt(points)
+
+
+def add_text_box_titles(deck: Deck) -> list[Slide]:
+    """Two slides titled with plain text boxes, no title placeholder, as two of three real decks are.
+
+    Slide 1 sets sizes on the paragraph (29 pt title, 18 pt body). Slide 2 sets them on the runs: a 12 pt kicker
+    above a 28 pt title, a bigger 30 pt formula line below it, a 14 pt body and a 90 pt star with no words.
+    """
+    texts = TEXTS["box_titles"]
+    first, second = _slide(deck, "blank"), _slide(deck, "blank")
+    _sized_box(first, texts["first"], top=0.3, points=29, on_paragraph=True)
+    _sized_box(first, texts["body"], top=1.6, points=18, on_paragraph=True)
+    _sized_box(second, texts["symbol"], top=0.2, points=90, on_paragraph=False, left=0.1)
+    _sized_box(second, texts["kicker"], top=0.3, points=12, on_paragraph=False)
+    _sized_box(second, texts["second"], top=0.7, points=28, on_paragraph=False)
+    _sized_box(second, texts["formula"], top=2.6, points=30, on_paragraph=False)
+    _sized_box(second, texts["body2"], top=4.2, points=14, on_paragraph=False)
+    return [first, second]
+
+
 def add_logo(slide: Slide) -> Picture:
     """The same small picture in the same corner: template decoration."""
     return _picture(slide, picture_png(LOGO_PX, seed=9), left=8.3, top=0.2, width=1.4)
@@ -317,6 +345,7 @@ BUILDERS: dict[str, Callable[[], Deck]] = {
     "tiny_icon": _single(add_tiny_icon),
     "reading_order": _single(add_reading_order),
     "mixed_deck": build_mixed_deck,
+    "text_box_titles": _single(add_text_box_titles),
 }
 
 

@@ -30,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     from app.ingestion.loaders import _pptx_shapes as shapes
     from app.ingestion.loaders.pptx import extract
 
-    before, everything = settings.INGESTION_DATA_DIR, []
+    before, everything, headed, slides = settings.INGESTION_DATA_DIR, [], 0, 0
     with tempfile.TemporaryDirectory(prefix="pptx_coverage_", ignore_cleanup_errors=True) as tmp:
         settings.INGESTION_DATA_DIR = str(Path(tmp) / "data")
         try:
@@ -44,14 +44,16 @@ def main(argv: list[str] | None = None) -> int:
                 except Exception as exc:                              # a broken deck: its type only
                     print(f"deck {sha[:12]}: not read ({type(exc).__name__})")
                     continue
+                with_heading = len({b.loc.slide for b in found.blocks if b.kind == "heading"})
+                headed, slides = headed + with_heading, slides + len(found.deck.slides)
                 print(f"\ndeck {sha[:12]}: slides {len(found.deck.slides)} | hidden {len(found.deck.hidden_slides)}"
-                      f" | blocks {len(found.blocks)}")
+                      f" | blocks {len(found.blocks)} | slides with a heading {with_heading}")
                 print("\n".join(shapes.summary(found.coverage)))
                 everything += found.coverage
         finally:
             settings.INGESTION_DATA_DIR = before
     if len(decks) > 1:
-        print(f"\nall {len(decks)} decks")
+        print(f"\nall {len(decks)} decks: slides with a heading {headed}/{slides}")
         print("\n".join(line for line in shapes.summary(everything) if "UNKNOWN" not in line))
     return 0
 
