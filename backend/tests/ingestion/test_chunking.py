@@ -27,7 +27,8 @@ def _text(n: int, word: str = "node") -> str:
 def _doc(*specs: dict[str, Any], source_type: SourceType = "pdf", status: Status = "ok") -> ParsedDocument:
     """Blocks from short specs: kind, text, path (after the title) and page; seq is filled in."""
     blocks = [Block(seq=i, kind=s.get("kind", "paragraph"), text=s["text"], heading_path=[T, *s.get("path", [])],
-                    loc=Location(**s.get("loc", {"page": 1}))) for i, s in enumerate(specs)]
+                    loc=Location(**s.get("loc", {"page": 1})), figure_id=s.get("figure_id"))
+              for i, s in enumerate(specs)]
     return ParsedDocument(resource_id="r1", course_id="c1", file_name="notes.pdf", file_sha256="0" * 64,
                           source_type=source_type, title=T, parser="test", parser_version="1",
                           blocks=[] if status == "failed" else blocks,
@@ -187,3 +188,29 @@ def test_finish_refuses_a_chunk_over_the_limit():
                      kinds=["paragraph"], block_seqs=[0])
     with pytest.raises(ValidationError):
         finish(doc, [too_long], "test/1", count=words)
+
+
+# ================================================================ figures (contract 2.1)
+
+def test_a_chunk_lists_the_figures_of_its_blocks_in_order_without_repeats():
+    doc = _doc({"text": _text(5)}, {"kind": "caption", "text": "FIGURE 1.1 A list", "figure_id": "fig4"},
+               {"kind": "figure_text", "text": "head", "figure_id": "fig4"},
+               {"kind": "figure", "text": "[Figure]", "figure_id": "fig2"})
+    assert [d.figure_ids for d in _chunk(doc)] == [["fig4", "fig2"]]
+
+
+def test_a_figure_whose_words_fall_into_two_chunks_is_linked_from_both():
+    doc = _doc({"kind": "figure_text", "text": _text(30, "head"), "figure_id": "fig1"},
+               {"kind": "caption", "text": _text(30, "list"), "figure_id": "fig1"})
+    assert [d.figure_ids for d in _chunk(doc, target=40, minimum=1)] == [["fig1"], ["fig1"]]
+
+
+def test_a_small_last_chunk_brings_its_figures_when_it_joins():
+    doc = _doc({"text": _text(30)}, {"kind": "caption", "text": "FIGURE 2.1 Push", "figure_id": "fig9"})
+    drafts = _chunk(doc, target=31, minimum=10)
+    assert len(drafts) == 1 and drafts[0].figure_ids == ["fig9"]
+
+
+def test_finish_names_each_figure_with_the_resource_id():
+    doc = _doc({"kind": "figure", "text": "[Figure]", "figure_id": "fig3"})
+    assert finish(doc, _chunk(doc), "test/1", count=words).chunks[0].figure_ids == ["r1:fig3"]

@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-CONTRACT_VERSION = "2.0"
+CONTRACT_VERSION = "2.1"      # 2.1: figure ids travel from blocks to chunks
 
 BlockKind = Literal["heading", "paragraph", "list_item", "table", "caption",
-                    "figure_text", "slide_notes", "code", "transcript", "formula"]
+                    "figure_text", "figure", "slide_notes", "code", "transcript", "formula"]
 SourceType = Literal["pdf", "docx", "pptx", "audio", "code", "text"]
 Lang = Literal["en", "ur", "mixed", "code"]
 Status = Literal["ok", "degraded", "failed"]
@@ -42,7 +42,16 @@ class Block(_Strict):
     loc: Location
     lang: Lang = "en"
     confidence: float | None = Field(None, ge=0, le=1)   # set only for speech-to-text (audio)
+    # The picture this block belongs to, by its name in this file: "fig7" is Docling's #/pictures/7. Set on a
+    # picture's caption, on the words inside it (figure_text) and on its "[Figure]" placeholder (kind "figure").
+    figure_id: str | None = Field(None, pattern=r"^fig\d+$")
     extra: dict = Field(default_factory=dict)       # track-private; the chunker never reads it
+
+    @model_validator(mode="after")
+    def _check_figure(self) -> "Block":
+        if self.kind == "figure" and self.figure_id is None:
+            raise ValueError("a figure block needs the figure_id of its picture")
+        return self
 
 
 class PrecheckResult(_Strict):
@@ -126,6 +135,7 @@ class Chunk(_Strict):
     kinds: list[BlockKind] = Field(min_length=1)     # the block kinds inside, e.g. ["paragraph", "code"]
     block_seqs: list[int] = Field(min_length=1)      # the blocks it came from: traceable to the source
     token_count: int = Field(ge=1, le=MAX_CHUNK_TOKENS)
+    figure_ids: list[str] = Field(default_factory=list)    # f"{resource_id}:fig7": the pictures it shows, in order
 
 
 class ChunkedDocument(_Strict):
@@ -147,6 +157,11 @@ class ChunkedDocument(_Strict):
                 raise ValueError(f"chunk {i}: heading_path must start with the title")
             if needed and getattr(c.loc, needed) is None:
                 raise ValueError(f"chunk {i}: loc.{needed} is required for {self.source_type}")
+            prefix = f"{self.resource_id}:fig"
+            if any(not f.startswith(prefix) or not f[len(prefix):].isdigit() for f in c.figure_ids):
+                raise ValueError(f"chunk {i}: a figure id must look like {prefix}7")
+            if len(set(c.figure_ids)) != len(c.figure_ids):
+                raise ValueError(f"chunk {i}: a figure id is listed twice")
         return self
 
 
