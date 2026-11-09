@@ -2,8 +2,9 @@
 
     python -m scripts.ingest_check path/to/file.pdf
 
-Prints the status, the blocks per kind, the chunk sizes in tokens and the seconds per stage, and saves parsed.json,
-chunks.json and a readable preview.md in data/ingestion/check_<file name>/. Exit code 0: ok or degraded; 1: failed.
+Prints the status, the blocks per kind, the figures (and whether every one reached a chunk), the chunk sizes in
+tokens and the seconds per stage, and saves parsed.json, chunks.json and a readable preview.md in
+data/ingestion/check_<file name>/. Exit code 0: ok or degraded; 1: failed.
 Every owner measures real files the same way, so the numbers can go straight into the measurement notes.
 """
 import argparse
@@ -13,7 +14,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from app.ingestion.contract import Chunk, ChunkedDocument
+from app.ingestion.contract import Chunk, ChunkedDocument, ParsedDocument
 from app.ingestion.pipeline import ProcessResult, process
 from app.ingestion.precheck import UnsupportedFileType
 from app.ingestion.storage import resource_dir, write_text_atomic
@@ -45,6 +46,21 @@ def _clock(seconds: float) -> str:
     return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
 
 
+def figures_line(parsed: ParsedDocument, chunked: ChunkedDocument | None) -> str:
+    """'figures: 12 (2 shown as [Figure]), 12 in chunks, 0 lost': the image check every owner runs after a change."""
+    in_blocks = list(dict.fromkeys(b.figure_id for b in parsed.blocks if b.figure_id))
+    if not in_blocks:
+        return "figures: none"
+    placeholders = sum(1 for b in parsed.blocks if b.kind == "figure")
+    line = f"figures: {len(in_blocks)} ({placeholders} shown as [Figure])"
+    if chunked is None:
+        return line
+    in_chunks = {f.rsplit(":", 1)[-1] for c in chunked.chunks for f in c.figure_ids}
+    lost = [name for name in in_blocks if name not in in_chunks]
+    missing = f" ({', '.join(lost)})" if lost else ""
+    return f"{line}, {len(in_blocks) - len(lost)} in chunks, {len(lost)} lost{missing}"
+
+
 def report(path: Path, result: ProcessResult, seconds: float) -> str:
     parsed, chunked = result.parsed, result.chunked
     kinds = Counter(b.kind for b in parsed.blocks)
@@ -52,6 +68,7 @@ def report(path: Path, result: ProcessResult, seconds: float) -> str:
         f"{path.name}: {parsed.source_type}, status {result.status}",
         f"warnings: {'; '.join(result.warnings) or 'none'}",
         f"blocks: {len(parsed.blocks)} ({', '.join(f'{kind} {n}' for kind, n in kinds.most_common()) or 'none'})",
+        figures_line(parsed, chunked),
     ]
     if chunked:
         sizes = [c.token_count for c in chunked.chunks]

@@ -95,3 +95,33 @@ def test_docx_chunks_cite_their_heading_path_not_a_page():
 
 def test_embedding_text_starts_with_the_heading_path():
     assert embedding_text(_chunk(0)) == "T > Stacks\nA stack is last in, first out."
+
+
+# --- figures (contract 2.1) -------------------------------------------------------------------
+
+def test_a_figure_block_needs_the_id_of_its_picture():
+    Block(seq=0, kind="figure", text="[Figure]", heading_path=["T"], loc=Location(page=1), figure_id="fig7")
+    with pytest.raises(ValidationError):
+        Block(seq=0, kind="figure", text="[Figure]", heading_path=["T"], loc=Location(page=1))
+
+
+@pytest.mark.parametrize("name", ["7", "pic7", "fig", "fig7a", "r:fig7"])
+def test_a_figure_id_in_a_block_is_the_picture_name_in_its_file(name):
+    with pytest.raises(ValidationError):
+        Block(seq=0, kind="caption", text="FIGURE 1.1 A node", heading_path=["T"], loc=Location(page=1),
+              figure_id=name)
+
+
+def test_a_chunk_lists_no_figures_unless_it_has_some():
+    assert _chunk(0).figure_ids == []
+
+
+def test_a_chunk_names_its_figures_with_the_resource_id():
+    ChunkedDocument(**_valid_chunked(chunks=[_chunk(0, figure_ids=["r:fig3", "r:fig12"]), _chunk(1)]))
+
+
+@pytest.mark.parametrize("ids", [["other:fig3"], ["r:fig"], ["r:pic3"], ["r:fig3", "r:fig3"]],
+                         ids=["other-resource", "no-number", "not-a-figure", "twice"])
+def test_broken_figure_ids_in_a_chunk_are_rejected(ids):
+    with pytest.raises(ValidationError):
+        ChunkedDocument(**_valid_chunked(chunks=[_chunk(0, figure_ids=ids)]))
