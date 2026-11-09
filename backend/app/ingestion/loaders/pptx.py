@@ -5,10 +5,15 @@ Each rule answers something measured on Docling 2.134.0 (step 1 of the PPTX plan
 - to_blocks() lets a heading run on into later slides, so each slide keeps only its own headings;
 - a slide whose only text is its title, with a picture that is not an icon, is named for the teacher, and a deck
   whose only text is titles is refused: headings add no text, so the chunker would make no chunk (Phase 0);
-- Docling keeps a chart's numbers on the chart's picture, which to_blocks() leaves out: each becomes a table block.
+- Docling keeps a chart's numbers on the chart's picture, which to_blocks() leaves out: each becomes a table block;
+- hidden slides are kept, and each of their blocks carries extra["hidden"] = True (the contract has no field yet).
+A coverage audit (_pptx_shapes.audit) puts every shape in "extracted", "skipped:<reason>" or "unknown"; unknown
+shapes are logged by slide number and shape type, never by text.
 Slide numbers, speaker notes and reviewers' comments need no rule here: to_blocks() already handles them.
 Broken files need none either: convert() raises FileRefused and ingest_file() turns it into a failed document.
 """
+import logging
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -17,10 +22,13 @@ from app.ingestion import messages
 from app.ingestion.cleaning.common import detect_lang, find_repeated_lines, is_repeated, title_from_filename
 from app.ingestion.contract import Block, BlockKind, Location, ParsedDocument, ResourceMeta, SourceType
 from app.ingestion.documents import FileRefused, parsed_document
+from app.ingestion.loaders import _pptx_shapes as shapes
 from app.ingestion.registry import register
 
 if TYPE_CHECKING:                       # type hints only: importing docling-core takes seconds
     from docling_core.types.doc import DoclingDocument
+
+logger = logging.getLogger("tta.ingestion")
 
 SOURCE_TYPE: SourceType = "pptx"
 FOOTER_KIND: BlockKind = "paragraph"    # footers reach us as plain paragraphs; headings and notes are never footers
@@ -49,7 +57,9 @@ class Extraction:
 
     title: str
     document: "DoclingDocument"
+    deck: shapes.Deck
     blocks: list[Block]
+    coverage: list[shapes.Entry]
     problems: list[str]
 
 
@@ -58,10 +68,28 @@ def extract(path: Path, file_sha256: str | None, title: str) -> Extraction:
     from app.ingestion.docling_blocks import to_blocks   # 2 s to import (step 1)
 
     conversion = converter.convert(path, SOURCE_TYPE, file_sha256)          # a broken file raises FileRefused
-    blocks = _own_slide_headings(_drop_footers(to_blocks(conversion.document, SOURCE_TYPE, title)))
+    deck = _read_deck(path)                                                 # after convert(): the file is sound
+    raw = to_blocks(conversion.document, SOURCE_TYPE, title)
+    kept = _drop_footers(raw)
+    blocks = _own_slide_headings(kept)
     blocks = _insert(blocks, _chart_tables(conversion.document, blocks, title))
+    blocks = _mark_hidden(blocks, deck.hidden_slides)
+    blocks = [b.model_copy(update={"seq": i}) for i, b in enumerate(blocks)]
+    kept_seqs = {b.seq for b in kept}
+    footers = [b.text for b in raw if b.seq not in kept_seqs]                # what _drop_footers() took out
+    coverage = shapes.audit(deck, blocks, footers, title)
+    _log_coverage(coverage)
     problems = [*conversion.problems, *_picture_only_slides(conversion.document, blocks)]
-    return Extraction(title, conversion.document, blocks, problems)
+    return Extraction(title, conversion.document, deck, blocks, coverage, problems)
+
+
+def _read_deck(path: Path) -> shapes.Deck:
+    """python-pptx's one pass. If it fails where Docling did not, keep Docling's result and log the error type."""
+    try:
+        return shapes.read_deck(path)
+    except Exception as exc:
+        logger.warning("pptx shapes pass failed (%s): no hidden flags, audit or extra text", type(exc).__name__)
+        return shapes.Deck([])
 
 
 def _drop_footers(blocks: list[Block]) -> list[Block]:
@@ -138,6 +166,24 @@ def _insert(blocks: list[Block], additions: list[Block]) -> list[Block]:
         notes = [i for i, b in enumerate(out) if _slide(b) == slide and b.kind == "slide_notes"]
         out.insert(notes[0] if notes else sum(1 for b in out if _slide(b) <= slide), new)
     return out
+
+
+def _log_coverage(coverage: list[shapes.Entry]) -> None:
+    counts = Counter(entry.bucket.split(":")[0] for entry in coverage)
+    logger.info("pptx coverage: extracted %d, skipped %d, unknown %d",
+                counts["extracted"], counts["skipped"], counts["unknown"])
+    for entry in coverage:
+        if entry.bucket == "unknown":
+            logger.warning("pptx coverage: slide %d, %s not accounted for", entry.slide, entry.tag)
+
+
+def _mark_hidden(blocks: list[Block], hidden: set[int]) -> list[Block]:
+    """Blocks of hidden slides stay (the team decides later) but say so in extra, which the chunker never reads."""
+    return [_with_extra(b, hidden=True) if _slide(b) in hidden else b for b in blocks]
+
+
+def _with_extra(block: Block, **extra: object) -> Block:
+    return Block.model_validate({**block.model_dump(), "extra": {**block.extra, **extra}})
 
 
 def _picture_only_slides(doc: "DoclingDocument", blocks: list[Block]) -> list[str]:

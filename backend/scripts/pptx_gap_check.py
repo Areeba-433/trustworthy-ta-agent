@@ -119,7 +119,8 @@ CHECKS: dict[str, Callable[[list, Any, int], str]] = {
     "chart": lambda b, c, s: f"chart words {found(TEXTS['chart']['categories'] + TEXTS['chart']['series'], b)}/5",
     "no_title": lambda b, c, s: "",
     "empty_slide": lambda b, c, s: "",
-    "hidden_slide": lambda b, c, s: f"slide kept {yes(bool(b))}, marked hidden no",
+    "hidden_slide": lambda b, c, s: f"slide kept {yes(bool(b))}, "
+                                    f"marked hidden {yes(bool(b) and all(x.extra.get('hidden') for x in b))}",
     "repeated_logo": lambda b, c, s: "",
     "tiny_icon": lambda b, c, s: "",
     "reading_order": lambda b, c, s: f"order kept {yes(order_kept(b))}",

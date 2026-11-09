@@ -10,6 +10,7 @@ import hashlib
 import io
 import logging
 import zipfile
+from collections import Counter
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -37,7 +38,7 @@ from app.ingestion import messages
 from app.ingestion.contract import ParsedDocument, PrecheckResult, ResourceMeta
 from app.ingestion.dispatcher import ingest_file
 from app.ingestion.documents import FileRefused
-from app.ingestion.loaders.pptx import load
+from app.ingestion.loaders.pptx import extract, load
 from app.ingestion.registry import is_heavy
 from app.ingestion.storage import parsed_path
 
@@ -93,10 +94,12 @@ class _Slides:
 def load_slides(monkeypatch) -> Callable[..., ParsedDocument]:
     """load() on a hand-built Docling result: no file is read, Docling never runs, nothing is cached."""
     from app.ingestion import converter            # imported here: it takes seconds to import
+    from app.ingestion.loaders import _pptx_shapes as shapes
 
     def run(slides: _Slides, problems: tuple[str, ...] = ()) -> ParsedDocument:
         conversion = converter.Conversion(slides.doc, problems)
         monkeypatch.setattr(converter, "convert", lambda path, source_type, file_sha256=None: conversion)
+        monkeypatch.setattr(shapes, "read_deck", lambda path: shapes.Deck([]))    # no file for python-pptx
         return load(Path("never-read.pptx"), _meta())
 
     return run
@@ -470,6 +473,10 @@ def test_empty_and_hidden_slides_keep_the_numbering(lecture):
     assert _on(lecture, 9) == ["Hidden extra", "- Only shown on request"]    # hidden slides are kept on purpose
 
 
+def test_hidden_slides_are_kept_and_marked_in_extra(lecture):
+    assert {b.loc.slide for b in lecture.blocks if b.extra.get("hidden")} == {9}
+
+
 def test_figure_words_stay_paragraphs_and_chart_data_becomes_a_table(lecture):
     assert not any(b.kind == "figure_text" for b in lecture.blocks)          # Docling puts no words in pictures
     assert _on(lecture, 7)[:3] == ["Diagram", "head node", "next pointer"]
@@ -485,6 +492,14 @@ def test_code_lines_stay_in_order_but_lose_their_indent(lecture):
 def test_a_picture_only_slide_is_named_in_the_warnings(lecture):
     assert lecture.quality.status == "degraded"
     assert lecture.quality.warnings == [messages.no_text_units("Slides", [11])]
+
+
+def test_every_shape_of_the_lecture_is_accounted_for(module_data_dir, lecture_file):
+    found = extract(lecture_file, _meta_for(lecture_file).file_sha256, TITLE)
+    assert Counter(e.bucket for e in found.coverage) == Counter({
+        "extracted": 18, "skipped:footer": 6, "skipped:slide number": 6,
+        "skipped:picture": 2, "skipped:deck title": 2,
+    })                                                            # and nothing "unknown"
 
 
 def test_the_result_passes_the_contract_check_the_dispatcher_runs(lecture):
