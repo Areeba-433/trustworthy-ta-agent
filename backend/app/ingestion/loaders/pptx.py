@@ -4,7 +4,8 @@ Each rule answers something measured on Docling 2.134.0 (step 1 of the PPTX plan
 - a footer typed on each slide comes out as a plain paragraph, so a paragraph repeated on most slides is dropped;
 - to_blocks() lets a heading run on into later slides, so each slide keeps only its own headings;
 - a slide whose only text is its title, with a picture that is not an icon, is named for the teacher, and a deck
-  whose only text is titles is refused: headings add no text, so the chunker would make no chunk (Phase 0).
+  whose only text is titles is refused: headings add no text, so the chunker would make no chunk (Phase 0);
+- Docling keeps a chart's numbers on the chart's picture, which to_blocks() leaves out: each becomes a table block.
 Slide numbers, speaker notes and reviewers' comments need no rule here: to_blocks() already handles them.
 Broken files need none either: convert() raises FileRefused and ingest_file() turns it into a failed document.
 """
@@ -13,8 +14,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from app.ingestion import messages
-from app.ingestion.cleaning.common import find_repeated_lines, is_repeated, title_from_filename
-from app.ingestion.contract import Block, BlockKind, ParsedDocument, ResourceMeta, SourceType
+from app.ingestion.cleaning.common import detect_lang, find_repeated_lines, is_repeated, title_from_filename
+from app.ingestion.contract import Block, BlockKind, Location, ParsedDocument, ResourceMeta, SourceType
 from app.ingestion.documents import FileRefused, parsed_document
 from app.ingestion.registry import register
 
@@ -58,6 +59,7 @@ def extract(path: Path, file_sha256: str | None, title: str) -> Extraction:
 
     conversion = converter.convert(path, SOURCE_TYPE, file_sha256)          # a broken file raises FileRefused
     blocks = _own_slide_headings(_drop_footers(to_blocks(conversion.document, SOURCE_TYPE, title)))
+    blocks = _insert(blocks, _chart_tables(conversion.document, blocks, title))
     problems = [*conversion.problems, *_picture_only_slides(conversion.document, blocks)]
     return Extraction(title, conversion.document, blocks, problems)
 
@@ -98,6 +100,44 @@ def _own_slide_headings(blocks: list[Block]) -> list[Block]:
 def _with_heading_path(block: Block, heading_path: list[str]) -> Block:
     """A new, validated Block: Pydantic checks an object only when it is created, so one is never edited."""
     return Block.model_validate({**block.model_dump(), "heading_path": heading_path})
+
+
+def _chart_tables(doc: "DoclingDocument", blocks: list[Block], title: str) -> list[Block]:
+    """One table block per chart, from the grid Docling keeps on the chart's picture (meta.tabular_chart)."""
+    from docling_core.types.doc import DocItemLabel, TableItem
+
+    found = []
+    for picture in doc.pictures:
+        chart = picture.meta.tabular_chart if picture.meta is not None else None
+        if chart is None or chart.chart_data is None or not picture.prov:
+            continue
+        table = TableItem(self_ref="#/tables/0", label=DocItemLabel.TABLE, data=chart.chart_data)
+        text = table.export_to_markdown(doc=doc).strip()    # the same Markdown to_blocks() writes for a table
+        if text:
+            found.append(_new_block("table", text, picture.prov[0].page_no, blocks, title, ref=picture.self_ref))
+    return found
+
+
+def _new_block(kind: BlockKind, text: str, slide: int, blocks: list[Block], title: str, **extra: object) -> Block:
+    """A block for content to_blocks() never saw, under the heading path of its slide's content (seq set later)."""
+    on_slide = [b for b in blocks if _slide(b) == slide]
+    content = [b for b in on_slide if b.kind != "slide_notes"] or on_slide
+    path = content[-1].heading_path if content else [title]
+    return Block(seq=0, kind=kind, text=text, heading_path=path, loc=Location(slide=slide), lang=detect_lang(text),
+                 extra=extra)
+
+
+def _insert(blocks: list[Block], additions: list[Block]) -> list[Block]:
+    """Each new block goes at the end of its slide's content, before that slide's speaker notes.
+
+    seq is left as it is: parsed_document() numbers every block again, 0, 1, 2 ..., in this order.
+    """
+    out = list(blocks)
+    for new in additions:
+        slide = _slide(new)
+        notes = [i for i, b in enumerate(out) if _slide(b) == slide and b.kind == "slide_notes"]
+        out.insert(notes[0] if notes else sum(1 for b in out if _slide(b) <= slide), new)
+    return out
 
 
 def _picture_only_slides(doc: "DoclingDocument", blocks: list[Block]) -> list[str]:

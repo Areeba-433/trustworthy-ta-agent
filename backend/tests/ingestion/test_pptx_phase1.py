@@ -51,3 +51,18 @@ def test_a_deck_whose_only_text_is_titles_is_refused(decks, name):
 def test_the_mixed_deck_names_its_title_and_picture_slide(decks):
     doc = load(decks["mixed_deck"], _meta(decks["mixed_deck"]))
     assert (doc.quality.status, doc.quality.warnings) == ("degraded", [messages.no_text_units("Slides", [2])])
+
+# ================================================================ 1.3: chart data from Docling
+
+def test_a_chart_becomes_one_table_block_and_the_deck_is_ok(decks, extracted):
+    heading, chart = extracted["chart"].blocks
+    assert (heading.kind, chart.kind, chart.loc.slide) == ("heading", "table", 1)
+    assert all(word in chart.text for word in TEXTS["chart"]["categories"] + TEXTS["chart"]["series"])
+    assert chart.extra["ref"].startswith("#/pictures/") and chart.heading_path == heading.heading_path
+    doc = load(decks["chart"], _meta(decks["chart"]))
+    assert (doc.quality.status, [b.seq for b in doc.blocks]) == ("ok", [0, 1])     # seq numbered again
+
+
+def test_the_chart_table_ends_its_slide_in_the_mixed_deck(extracted):
+    kinds = [b.kind for b in extracted["mixed_deck"].blocks if b.loc.slide == 7]
+    assert kinds == ["heading", "paragraph", "paragraph", "paragraph", "table"]

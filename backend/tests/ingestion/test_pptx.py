@@ -396,7 +396,8 @@ def _table_cells(markdown: str) -> list[list[str]]:
 
 def test_real_docling_gives_these_blocks_in_reading_order(lecture):
     rows = _rows(lecture)
-    table = next(text for kind, text, _ in rows if kind == "table")
+    table = next(text for kind, text, slide in rows if kind == "table" and slide == 6)
+    chart = next(text for kind, text, slide in rows if kind == "table" and slide == 7)
     assert rows == [
         ("paragraph", "Lecture 4", 1),
         ("slide_notes", "Welcome everyone.", 1),
@@ -411,6 +412,7 @@ def test_real_docling_gives_these_blocks_in_reading_order(lecture):
         ("heading", "Diagram", 7),
         ("paragraph", "head node", 7),
         ("paragraph", "next pointer", 7),
+        ("table", chart, 7),
         ("list_item", "- Recap of the lecture", 8),
         ("heading", "Hidden extra", 9),
         ("list_item", "- Only shown on request", 9),
@@ -468,10 +470,12 @@ def test_empty_and_hidden_slides_keep_the_numbering(lecture):
     assert _on(lecture, 9) == ["Hidden extra", "- Only shown on request"]    # hidden slides are kept on purpose
 
 
-def test_figure_words_stay_paragraphs_and_chart_labels_are_not_read_yet(lecture):
+def test_figure_words_stay_paragraphs_and_chart_data_becomes_a_table(lecture):
     assert not any(b.kind == "figure_text" for b in lecture.blocks)          # Docling puts no words in pictures
-    assert _on(lecture, 7) == ["Diagram", "head node", "next pointer"]
-    assert not any("calls" in b.text for b in lecture.blocks)    # known gap: asked to_blocks() to read chart data
+    assert _on(lecture, 7)[:3] == ["Diagram", "head node", "next pointer"]
+    chart = next(b for b in lecture.blocks if b.loc.slide == 7 and b.kind == "table")
+    assert chart.extra["ref"].startswith("#/pictures/")                     # Docling's chart, not a real table
+    assert _table_cells(chart.text) == [["", "calls per test"], ["push calls", "3"], ["pop calls", "1"]]
 
 
 def test_code_lines_stay_in_order_but_lose_their_indent(lecture):
