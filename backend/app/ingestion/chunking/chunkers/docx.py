@@ -5,7 +5,7 @@ from app.ingestion.chunking.registry import register_chunker
 from app.ingestion.chunking.sections import chunk_sections
 from app.ingestion.contract import ChunkedDocument, ParsedDocument
 
-NAME = "docx-sections/1"     # saved with every chunk: raise the number whenever this chunker's output changes
+NAME = "docx-sections/2"     # saved with every chunk: raise the number whenever this chunker's output changes
 
 
 @register_chunker("docx")
