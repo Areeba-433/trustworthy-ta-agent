@@ -4,7 +4,9 @@ from typing import Any
 
 import pytest
 
-from app.ingestion.contract import Chunk, Location
+from app.ingestion.chunking.base import finish
+from app.ingestion.chunking.sections import chunk_sections
+from app.ingestion.contract import Block, Chunk, ChunkedDocument, Location, ParsedDocument, QualityReport
 from scripts import ingest_check
 
 
@@ -49,3 +51,35 @@ def test_an_unsupported_file_type_is_a_usage_error(tmp_path, data_dir):
     with pytest.raises(SystemExit) as exit_info:
         ingest_check.main([str(sheet)])
     assert exit_info.value.code == 2                            # argparse's code for "used the wrong way"
+
+
+# --- the figures line: the image check after every change ---------------------------------------
+
+def _words(text: str) -> int:
+    return len(text.split())
+
+
+def _parsed(*figure_ids: str | None) -> ParsedDocument:
+    blocks = [Block(seq=i, kind="figure" if name and i % 2 else "caption" if name else "paragraph",
+                    text="[Figure]" if name and i % 2 else f"FIGURE 1.{i} A list", heading_path=["T"],
+                    loc=Location(page=i + 1), figure_id=name) for i, name in enumerate(figure_ids)]
+    return ParsedDocument(resource_id="r", course_id="c", file_name="a.pdf", file_sha256="0" * 64,
+                          source_type="pdf", title="T", parser="p", parser_version="1", blocks=blocks,
+                          quality=QualityReport(status="ok", units_total=len(blocks), chars_total=40))
+
+
+def test_the_figures_line_counts_figures_and_placeholders_and_finds_none_lost():
+    doc = _parsed("fig0", "fig1")                        # a caption of fig0, then fig1 as [Figure]
+    chunked = finish(doc, chunk_sections(doc, count=_words), "test/1", count=_words)
+    assert ingest_check.figures_line(doc, chunked) == "figures: 2 (1 shown as [Figure]), 2 in chunks, 0 lost"
+
+
+def test_the_figures_line_names_a_figure_that_never_reached_a_chunk():
+    doc = _parsed("fig0", "fig1")
+    chunked = ChunkedDocument(resource_id="r", course_id="c", source_type="pdf", title="T", chunker="test/1",
+                              chunks=[_chunk(page=1).model_copy(update={"figure_ids": ["r:fig0"]})])
+    assert ingest_check.figures_line(doc, chunked) == "figures: 2 (1 shown as [Figure]), 1 in chunks, 1 lost (fig1)"
+
+
+def test_the_figures_line_says_none_for_a_file_without_pictures():
+    assert ingest_check.figures_line(_parsed(None), None) == "figures: none"
