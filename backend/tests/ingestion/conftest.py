@@ -28,11 +28,12 @@ def scanned_pdf(tmp_path):
     return path
 
 
-def write_pdf(path, pages, fonts=("Helvetica",), mediabox=(0, 0, 595, 842), images=()):
+def write_pdf(path, pages, fonts=("Helvetica",), mediabox=(0, 0, 595, 842), images=(), bookmarks=()):
     """A PDF written by hand, no extra library. `pages` holds one content stream per page, which names the fonts
     /F1, /F2 ... in the order of `fonts`. Text uses Windows character codes, so curly quotes and apostrophes come
     out as typed. Most PDFs' pages start at (0, 0), but not all: `mediabox` can move the page's corner.
-    `images` holds picture objects (dictionary and stream) that every page can draw as /Im0, /Im1 ..."""
+    `images` holds picture objects (dictionary and stream) that every page can draw as /Im0, /Im1 ...
+    `bookmarks` holds the PDF's outline, top level only: (title, page index from 0), like ("9 Inheritance", 396)."""
     objects = [b"<< /Type /Catalog /Pages 2 0 R >>", b""]
     objects += [b"<< /Type /Font /Subtype /Type1 /BaseFont /%s /Encoding /WinAnsiEncoding >>" % font.encode()
                 for font in fonts]
@@ -50,6 +51,15 @@ def write_pdf(path, pages, fonts=("Helvetica",), mediabox=(0, 0, 595, 842), imag
                        % (" ".join(map(str, mediabox)).encode(), len(objects), resources))
         kids.append(b"%d 0 R" % len(objects))
     objects[1] = b"<< /Type /Pages /Kids [" + b" ".join(kids) + b"] /Count %d >>" % len(pages)
+    if bookmarks:                        # the outline's root, then one object per bookmark, linked to each other
+        root, first, last = len(objects) + 1, len(objects) + 2, len(objects) + 1 + len(bookmarks)
+        objects[0] = b"<< /Type /Catalog /Pages 2 0 R /Outlines %d 0 R >>" % root
+        objects.append(b"<< /Type /Outlines /First %d 0 R /Last %d 0 R /Count %d >>" % (first, last, len(bookmarks)))
+        for number, (title, page) in enumerate(bookmarks, start=first):
+            links = (b" /Prev %d 0 R" % (number - 1) if number > first else b"") + \
+                    (b" /Next %d 0 R" % (number + 1) if number < last else b"")
+            objects.append(b"<< /Title (%s) /Parent %d 0 R /Dest [%s /Fit]%s >>"
+                           % (title.encode("cp1252"), root, kids[page], links))
     out = bytearray(b"%PDF-1.4\n")
     offsets = []
     for number, body in enumerate(objects, start=1):

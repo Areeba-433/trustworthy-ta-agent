@@ -10,7 +10,7 @@ def test_a_file_goes_all_the_way_to_chunks_json(digital_pdf, data_dir, word_toke
     saved = ChunkedDocument.model_validate_json((data_dir / "r1" / "chunks.json").read_text(encoding="utf-8"))
     assert (result.status, result.warnings) == ("ok", [])
     assert saved == result.chunked
-    assert saved.chunker == "pdf-sections/1" and saved.chunks[0].chunk_id == "r1:0"
+    assert saved.chunker == "pdf-sections/2" and saved.chunks[0].chunk_id == "r1:0"
     assert (data_dir / "r1" / "parsed.json").exists()
 
 

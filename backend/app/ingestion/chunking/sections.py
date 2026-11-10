@@ -5,6 +5,12 @@
 3. Each section's blocks are packed, in order, into chunks of up to `target` tokens. A block is never cut to fill
    a chunk: one that does not fit starts the next chunk.
 4. A last chunk under `minimum` tokens joins the chunk before it in the same section, if the two fit the limit.
+With join_intros=True (books), a short introduction joins what it introduces, as a chunk of its own it is too small
+to answer anything:
+- a whole section under `minimum` tokens that is followed by its first subsection joins that subsection, under the
+  subsection's heading path ("This chapter covers ..." and the chapter's first section);
+- a chunk under `minimum` tokens joins the next chunk of its section, if the two fit the limit ("Here's the
+  listing:" and the listing that did not fit next to it).
 Headings add no text: the heading path already travels with every chunk and is embedded with it.
 Every chunk lists the figures of its blocks (figure_ids), so a figure is never lost between blocks and chunks.
 """
@@ -31,13 +37,18 @@ def by_slide(block: Block) -> Hashable:
 
 def chunk_sections(doc: ParsedDocument, *, section_key: Callable[[Block], Hashable] = by_heading_path,
                    target: int = TARGET_TOKENS, minimum: int = MIN_TOKENS,
-                   count: TokenCounter = count_tokens) -> list[Draft]:
+                   count: TokenCounter = count_tokens, join_intros: bool = False) -> list[Draft]:
     if doc.quality.status == "failed":
         raise ValueError("a failed document has no blocks to chunk")
+    sections = list(_sections(doc.blocks, section_key))
+    if join_intros:
+        sections = _join_intros(sections, minimum, count)
     drafts: list[Draft] = []
-    for section in _sections(doc.blocks, section_key):
+    for section in sections:
         pieces = [(block, part) for block in section for part in _fit(block, target, count)]
         section_drafts = _pack(pieces, target, count)
+        if join_intros:
+            _join_small_leads(section_drafts, minimum, count)
         _join_small_tail(section_drafts, minimum, count)
         drafts.extend(section_drafts)
     return drafts
@@ -56,6 +67,28 @@ def _sections(blocks: list[Block], key: Callable[[Block], Hashable]) -> Iterator
             section.append(block)
     if section:
         yield section
+
+
+def _join_intros(sections: list[list[Block]], minimum: int, count: TokenCounter) -> list[list[Block]]:
+    """Each section under `minimum` tokens joins the next section when that one is its subsection (its heading path
+    goes on from this one's); the joined blocks take the subsection's heading path, which holds both headings.
+    Joined sections can join again: a short chapter introduction, then a short section introduction."""
+    joined: list[list[Block]] = []
+    carried: list[Block] = []
+    for section, following in zip(sections, sections[1:] + [[]]):
+        path = section[0].heading_path
+        section = [block.model_copy(update={"heading_path": path}) for block in carried] + section
+        carried = []
+        if following and _goes_on(following[0].heading_path, path) \
+                and count(SEPARATOR.join(block.text for block in section)) < minimum:
+            carried = section
+        else:
+            joined.append(section)
+    return joined
+
+
+def _goes_on(path: list[str], parent: list[str]) -> bool:
+    return len(path) > len(parent) and path[:len(parent)] == parent
 
 
 def _fit(block: Block, target: int, count: TokenCounter) -> list[str]:
@@ -92,14 +125,29 @@ def _draft(pieces: list[tuple[Block, str]]) -> Draft:
     )
 
 
+def _join_small_leads(drafts: list[Draft], minimum: int, count: TokenCounter) -> None:
+    """Each chunk under `minimum` tokens, but the last, joins the chunk after it, if the two fit the limit."""
+    n = 0
+    while n < len(drafts) - 1:
+        if count(drafts[n].text) < minimum:
+            joined = _merged(drafts[n], drafts[n + 1])
+            if count(joined.text) <= MAX_CHUNK_TOKENS:
+                drafts[n:n + 2] = [joined]
+                continue
+        n += 1
+
+
 def _join_small_tail(drafts: list[Draft], minimum: int, count: TokenCounter) -> None:
     if len(drafts) < 2 or count(drafts[-1].text) >= minimum:
         return
-    before, tail = drafts[-2], drafts[-1]
-    text = before.text + SEPARATOR + tail.text
-    if count(text) <= MAX_CHUNK_TOKENS:
-        drafts[-2:] = [Draft(text=text, heading_path=before.heading_path,
-                             loc=merge_locations([before.loc, tail.loc]),
-                             kinds=list(dict.fromkeys(before.kinds + tail.kinds)),
-                             block_seqs=list(dict.fromkeys(before.block_seqs + tail.block_seqs)),
-                             figure_ids=list(dict.fromkeys(before.figure_ids + tail.figure_ids)))]
+    joined = _merged(drafts[-2], drafts[-1])
+    if count(joined.text) <= MAX_CHUNK_TOKENS:
+        drafts[-2:] = [joined]
+
+
+def _merged(before: Draft, after: Draft) -> Draft:
+    return Draft(text=before.text + SEPARATOR + after.text, heading_path=before.heading_path,
+                 loc=merge_locations([before.loc, after.loc]),
+                 kinds=list(dict.fromkeys(before.kinds + after.kinds)),
+                 block_seqs=list(dict.fromkeys(before.block_seqs + after.block_seqs)),
+                 figure_ids=list(dict.fromkeys(before.figure_ids + after.figure_ids)))

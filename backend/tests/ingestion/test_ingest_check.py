@@ -33,11 +33,13 @@ def test_resource_ids_are_safe_folder_names():
     assert ingest_check.resource_id_for(Path("Data Structures (3rd ed).pdf")) == "check_Data-Structures-3rd-ed-"
 
 
-def test_a_good_file_is_reported_and_previewed(digital_pdf, data_dir, word_tokens):
+def test_a_good_file_is_reported_and_previewed(digital_pdf, data_dir, word_tokens, capsys):
     assert ingest_check.main([str(digital_pdf)]) == 0
+    out = capsys.readouterr().out
+    assert "chunks: 1 (pdf-sections/2), tokens per chunk: min 36, median 36, max 36, under 64: 1" in out
     folder = data_dir / "check_digital"
     assert (folder / "chunks.json").exists()
-    assert (folder / "preview.md").read_text(encoding="utf-8").startswith("# digital.pdf: 1 chunk (pdf-sections/1)")
+    assert (folder / "preview.md").read_text(encoding="utf-8").startswith("# digital.pdf: 1 chunk (pdf-sections/2)")
 
 
 def test_a_refused_file_exits_with_1_and_has_no_preview(scanned_pdf, data_dir):

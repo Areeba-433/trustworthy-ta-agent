@@ -3,8 +3,9 @@
     python -m scripts.ingest_check path/to/file.pdf
 
 Prints the status, the blocks per kind, the figures (and whether every one reached a chunk), the chunk sizes in
-tokens and the seconds per stage, and saves parsed.json, chunks.json and a readable preview.md in
-data/ingestion/check_<file name>/. Exit code 0: ok or degraded; 1: failed.
+tokens (with how many chunks are under the chunker's minimum: too small to answer much) and the seconds per stage,
+and saves parsed.json, chunks.json and a readable preview.md in data/ingestion/check_<file name>/.
+Exit code 0: ok or degraded; 1: failed.
 Every owner measures real files the same way, so the numbers can go straight into the measurement notes.
 """
 import argparse
@@ -14,6 +15,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
+from app.ingestion.chunking.sections import MIN_TOKENS
 from app.ingestion.contract import Chunk, ChunkedDocument, ParsedDocument
 from app.ingestion.pipeline import ProcessResult, process
 from app.ingestion.precheck import UnsupportedFileType
@@ -73,7 +75,8 @@ def report(path: Path, result: ProcessResult, seconds: float) -> str:
     if chunked:
         sizes = [c.token_count for c in chunked.chunks]
         lines.append(f"chunks: {len(sizes)} ({chunked.chunker}), tokens per chunk: "
-                     f"min {min(sizes)}, median {statistics.median(sizes):g}, max {max(sizes)}")
+                     f"min {min(sizes)}, median {statistics.median(sizes):g}, max {max(sizes)}, "
+                     f"under {MIN_TOKENS}: {sum(size < MIN_TOKENS for size in sizes)}")
     stages = ", ".join(f"{name.removeprefix('dispatch_')} {secs:.2f}"
                        for name, secs in parsed.quality.seconds_taken.items())
     lines.append(f"seconds: {stages}, total {seconds:.2f}")

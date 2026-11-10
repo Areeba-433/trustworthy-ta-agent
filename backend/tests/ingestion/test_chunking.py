@@ -103,6 +103,70 @@ def test_a_small_last_chunk_joins_the_one_before_it_when_both_fit():
     assert [d.block_seqs for d in apart] == [[0], [1]]              # 520 would pass the limit
 
 
+# ================================================================ join_intros: books
+
+def test_a_short_introduction_joins_its_first_subsection_under_the_subsection_s_path():
+    doc = _doc(
+        {"kind": "heading", "text": "Inheritance", "path": ["Inheritance"]},
+        {"text": "This chapter shows how classes inherit.", "path": ["Inheritance"]},
+        {"kind": "heading", "text": "Base Class", "path": ["Inheritance", "Base Class"]},
+        {"text": _text(100), "path": ["Inheritance", "Base Class"]},
+    )
+    joined = _chunk(doc, join_intros=True)
+    assert [(d.block_seqs, d.heading_path) for d in joined] == [([1, 3], [T, "Inheritance", "Base Class"])]
+    assert joined[0].text.startswith("This chapter shows how classes inherit.\n\nnode node")
+    assert [d.block_seqs for d in _chunk(doc)] == [[1], [3]]          # off by default: other formats keep apart
+
+
+def test_short_introductions_join_down_through_their_subsections():
+    drafts = _chunk(_doc(
+        {"text": "About the chapter.", "path": ["Inheritance"]},
+        {"text": "About the section.", "path": ["Inheritance", "Base Class"]},
+        {"text": _text(100), "path": ["Inheritance", "Base Class", "Access"]},
+    ), join_intros=True)
+    assert [(d.block_seqs, d.heading_path) for d in drafts] == [([0, 1, 2], [T, "Inheritance", "Base Class", "Access"])]
+
+
+def test_a_short_section_is_not_joined_to_the_next_section_when_that_is_no_subsection_of_it():
+    drafts = _chunk(_doc(
+        {"text": "A short section.", "path": ["Inheritance", "Base Class"]},
+        {"text": _text(100), "path": ["Inheritance", "Derived Class"]},       # a sibling
+        {"text": "Another short one.", "path": ["Inheritance", "Summary"]},   # the last section
+    ), join_intros=True)
+    assert [d.block_seqs for d in drafts] == [[0], [1], [2]]
+
+
+def test_a_section_of_the_minimum_size_or_more_stays_apart_from_its_subsection():
+    drafts = _chunk(_doc(
+        {"text": _text(64), "path": ["Inheritance"]},
+        {"text": _text(100), "path": ["Inheritance", "Base Class"]},
+    ), join_intros=True)
+    assert [d.block_seqs for d in drafts] == [[0], [1]]
+
+
+def test_a_short_lead_joins_the_next_chunk_of_its_section_when_both_fit():
+    """"Here's the listing:" and the listing that did not fit next to it under the target."""
+    drafts = _chunk(_doc(
+        {"text": "Here's the listing:", "path": ["Arrays"]},
+        {"kind": "code", "text": _text(450), "path": ["Arrays"]},
+        {"text": "Not even a sentence.", "path": ["Arrays"]},
+        {"kind": "code", "text": _text(510), "path": ["Arrays"]},
+    ), join_intros=True)
+    assert [d.block_seqs for d in drafts] == [[0, 1], [2], [3]]       # 4 + 510 words would pass the limit
+    assert [d.kinds for d in drafts][0] == ["paragraph", "code"]
+    assert [d.block_seqs for d in _chunk(_doc(
+        {"text": "Here's the listing:", "path": ["Arrays"]},
+        {"kind": "code", "text": _text(450), "path": ["Arrays"]}))] == [[0], [1]]
+
+
+def test_the_pdf_chunker_joins_introductions(word_tokens):
+    from app.ingestion.chunking.chunkers import pdf
+    chunked = pdf.chunk(_doc({"text": "About the chapter.", "path": ["Inheritance"]},
+                             {"text": _text(100), "path": ["Inheritance", "Base Class"]}))
+    assert chunked.chunker == "pdf-sections/2"
+    assert [(c.block_seqs, c.heading_path) for c in chunked.chunks] == [([0, 1], [T, "Inheritance", "Base Class"])]
+
+
 def test_a_chunk_covers_the_pages_of_all_its_blocks():
     drafts = _chunk(_doc(
         {"text": "Starts here.", "path": ["Lists"], "loc": {"page": 4}},

@@ -2,10 +2,13 @@
 on the page edges out, remove_contents_and_index() the contents and index pages, link_figure_labels() gives a
 picture the "FIGURE 2.3" label Docling read as a heading or left loose, join_caption_lines() gives a caption back
 its description line, and split_long_headings() cuts a heading Docling made of a whole region
-back to the heading. Then to_blocks() makes blocks, restore_code_lines() gives code listings their lines back and
-tells code from sentences by font, mark_exponents() keeps the exponent of a power of ten ("10^308"),
-order_by_position() puts what stands higher on a page first, and mark_figures() notes where each figure is, so an
-answer can show it."""
+back to the heading. list_headings() makes list items of the bullet points Docling took for headings,
+set_heading_levels() puts each heading under the bigger ones by its size, and name_chapters() calls each chapter's
+heading after the PDF's bookmark ("Chapter 9: Inheritance"). Then to_blocks() makes blocks, restore_code_lines()
+gives code listings their lines back and tells code from sentences by font, mark_exponents() keeps the exponent of a
+power of ten ("10^308"), order_by_position() puts what stands higher on a page first, join_page_listings() makes one
+block of a listing that a page break cut in two, and mark_figures() notes where each figure is, so an answer can
+show it."""
 from pathlib import Path
 
 from app.ingestion import messages
@@ -20,6 +23,7 @@ from app.ingestion.pdf_figures import join_caption_lines, link_figure_labels, ma
 from app.ingestion.pdf_furniture import remove_chapter_tabs, remove_contents_and_index
 from app.ingestion.pdf_headings import split_long_headings
 from app.ingestion.pdf_order import order_by_position
+from app.ingestion.pdf_structure import join_page_listings, list_headings, name_chapters, set_heading_levels
 from app.ingestion.registry import register
 from app.ingestion.storage import Timer
 
@@ -42,6 +46,12 @@ def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
         join_caption_lines(conversion.document)
     with timer("headings"):
         split_long_headings(conversion.document, path)
+    with timer("list_headings"):
+        list_headings(conversion.document)
+    with timer("heading_levels"):
+        set_heading_levels(conversion.document, path)
+    with timer("chapters"):
+        name_chapters(conversion.document, path)
     with timer("blocks"):
         blocks = to_blocks(conversion.document, "pdf", title)
     with timer("code_lines"):
@@ -50,6 +60,8 @@ def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
         blocks = mark_exponents(blocks, path)
     with timer("order"):
         blocks = order_by_position(blocks, conversion.document)
+    with timer("page_listings"):
+        blocks = join_page_listings(blocks)
     with timer("figures"):
         blocks = mark_figures(blocks, conversion.document)
     problems, notes = page_findings(meta.precheck)
