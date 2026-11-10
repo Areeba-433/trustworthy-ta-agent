@@ -46,6 +46,7 @@ FILE_NAME = "Stacks_final.pptx"       # title_from_filename() turns this into TI
 TITLE = "Stacks"
 FOOTER = "CS-201 Data Structures"     # typed in the footer of most slides, like a real lecture deck
 SLIDE_SIZE = Size(width=960, height=540)
+EMU_PER_POINT = 12700                 # Docling gives PowerPoint positions in EMU, 12,700 per point
 # one different sentence per slide: find_repeated_lines() treats digits as equal ("Point 1" = "Point 2")
 POINTS = ["Push adds on top.", "Pop removes the top.", "Peek reads the top.", "Empty checks the size."]
 
@@ -57,8 +58,9 @@ def _meta(file_name: str = FILE_NAME, file_sha256: str = "0" * 64) -> ResourceMe
 
 # ================================================================ part 1: hand-built Docling results
 
-def _prov(slide: int) -> ProvenanceItem:
-    return ProvenanceItem(page_no=slide, bbox=BoundingBox(l=0, t=0, r=1, b=1), charspan=(0, 0))
+def _prov(slide: int, shown: tuple[int, int] = (1, 1)) -> ProvenanceItem:
+    width, height = shown
+    return ProvenanceItem(page_no=slide, bbox=BoundingBox(l=0, t=0, r=width, b=height), charspan=(0, 0))
 
 
 class _Slides:
@@ -85,8 +87,11 @@ class _Slides:
         return self
 
     def picture(self, slide: int, size: tuple[int, int] | None = None) -> "_Slides":
+        """A picture shown `size` points wide and high (360 by 202 if not given), placed in EMU like Docling's."""
         image = ImageRef.from_pil(Image.new("RGB", size, "white"), dpi=72) if size else None
-        self.doc.add_picture(prov=_prov(slide), parent=self._groups[slide - 1], image=image)
+        width, height = size or (360, 202)
+        shown = (width * EMU_PER_POINT, height * EMU_PER_POINT)
+        self.doc.add_picture(prov=_prov(slide, shown), parent=self._groups[slide - 1], image=image)
         return self
 
 
@@ -190,9 +195,10 @@ def test_a_picture_slide_whose_only_text_is_the_footer_is_named_too(load_slides)
     assert load_slides(deck).quality.warnings == [messages.no_text_units("Slides", [4])]
 
 
-def test_a_deck_without_any_text_fails_with_the_no_text_message(load_slides):
+def test_a_deck_of_pictures_only_keeps_a_figure_block_per_picture_and_names_every_slide(load_slides):
     doc = load_slides(_Slides(2).picture(1).picture(2))
-    assert (doc.quality.status, doc.quality.warnings, doc.blocks) == ("failed", [messages.NO_TEXT_FILE], [])
+    assert _rows(doc) == [("figure", "[Figure]", 1), ("figure", "[Figure]", 2)]     # contract 2.1: never lost
+    assert (doc.quality.status, doc.quality.warnings) == ("degraded", [messages.no_text_units("Slides", [1, 2])])
 
 
 def test_a_partial_docling_result_is_degraded_and_its_problem_comes_first(load_slides):
@@ -205,12 +211,13 @@ def test_a_title_with_a_picture_is_named_but_a_title_with_an_icon_is_not(load_sl
     doc = load_slides(_Slides(3).title(1, "Push").picture(1, size=(640, 360)).title(2, "Pop")
                       .picture(2, size=(32, 32)).text(3, "Peek reads the top."))
     assert doc.quality.warnings == [messages.no_text_units("Slides", [1])]   # a title adds no text to a chunk
+    assert [b.loc.slide for b in doc.blocks if b.kind == "figure"] == [1]   # an icon leaves no "[Figure]" block
 
 
 def test_a_deck_whose_only_text_is_titles_is_refused_with_the_no_text_message(load_slides):
     with pytest.raises(FileRefused) as refused:
-        load_slides(_Slides(2).title(1, "Push").picture(1).title(2, "Pop"))
-    assert refused.value.reason == messages.NO_TEXT_FILE               # not a chunking crash later
+        load_slides(_Slides(2).title(1, "Push").picture(1, size=(32, 32)).title(2, "Pop"))
+    assert refused.value.reason == messages.NO_TEXT_FILE               # an icon is no content: still no chunk
 
 
 # ================================================================ part 2: real Docling on a generated deck
@@ -413,8 +420,10 @@ def test_real_docling_gives_these_blocks_in_reading_order(lecture):
         ("heading", "Costs", 6),
         ("table", table, 6),
         ("heading", "Diagram", 7),
+        ("figure", "[Figure]", 7),
         ("paragraph", "head node", 7),
         ("paragraph", "next pointer", 7),
+        ("figure", "[Figure]", 7),
         ("table", chart, 7),
         ("list_item", "- Recap of the lecture", 8),
         ("heading", "Hidden extra", 9),
@@ -423,6 +432,7 @@ def test_real_docling_gives_these_blocks_in_reading_order(lecture):
         ("paragraph", "// sum an array", 10),
         ("paragraph", "for (int i = 0; i < n; i++)", 10),
         ("paragraph", "sum += a[i];", 10),
+        ("figure", "[Figure]", 11),
     ]
     assert _table_cells(table) == [["Operation", "Cost"], ["push", "O(1)"], ["search", "O(n)"]]
 
@@ -479,8 +489,10 @@ def test_hidden_slides_are_kept_and_marked_in_extra(lecture):
 
 def test_figure_words_stay_paragraphs_and_chart_data_becomes_a_table(lecture):
     assert not any(b.kind == "figure_text" for b in lecture.blocks)          # Docling puts no words in pictures
-    assert _on(lecture, 7)[:3] == ["Diagram", "head node", "next pointer"]
+    assert _on(lecture, 7)[:4] == ["Diagram", "[Figure]", "head node", "next pointer"]
     chart = next(b for b in lecture.blocks if b.loc.slide == 7 and b.kind == "table")
+    figures = [b.figure_id for b in lecture.blocks if b.loc.slide == 7 and b.kind == "figure"]
+    assert len(set(figures)) == 2 and chart.figure_id == figures[-1]       # the chart's "[Figure]" and its numbers
     assert chart.extra["ref"].startswith("#/pictures/")                     # Docling's chart, not a real table
     assert _table_cells(chart.text) == [["", "calls per test"], ["push calls", "3"], ["pop calls", "1"]]
 
@@ -561,7 +573,6 @@ def _write_zip(path: Path) -> None:
     pytest.param(_write_truncated, messages.UNREADABLE, id="cut off"),
     pytest.param(_write_zip, messages.UNREADABLE, id="zip, not a deck"),
     pytest.param(_write_word_file, messages.TYPE_MISMATCH, id="renamed Word file"),
-    pytest.param(_write_pictures_only, messages.NO_TEXT_FILE, id="pictures only"),
     pytest.param(_write_small_deck, messages.NO_TEXT_FILE, id="titles only"),
 ])
 def test_a_broken_or_empty_deck_fails_with_a_teacher_message(data_dir, tmp_path, write, reason):
@@ -570,6 +581,14 @@ def test_a_broken_or_empty_deck_fails_with_a_teacher_message(data_dir, tmp_path,
     doc = ingest_file(path, "r1", "c1")
     assert (doc.quality.status, doc.quality.warnings, doc.blocks) == ("failed", [reason], [])
     assert parsed_path("r1").exists()                             # the failure is saved like any result
+
+
+def test_a_deck_of_pictures_only_goes_through_with_a_figure_block_per_picture(data_dir, tmp_path):
+    path = tmp_path / "upload.pptx"
+    _write_pictures_only(path)
+    doc = ingest_file(path, "r1", "c1")
+    assert (doc.quality.status, _rows(doc)) == ("degraded", [("figure", "[Figure]", 1)])     # contract 2.1
+    assert doc.quality.warnings == [messages.no_text_units("Slides", [1])]
 
 
 def test_a_crash_inside_docling_fails_politely_and_logs_the_traceback(data_dir, tmp_path, monkeypatch, caplog):

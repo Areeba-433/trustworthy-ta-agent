@@ -3,12 +3,18 @@
 Each rule answers something measured on Docling 2.134.0 (step 1 of the PPTX plan, then Phase 0 and Phase 1):
 - a footer typed on each slide comes out as a plain paragraph, so a paragraph repeated on most slides is dropped;
 - to_blocks() lets a heading run on into later slides, so each slide keeps only its own headings;
-- a slide whose only text is its title, with a picture that is not an icon, is named for the teacher, and a deck
-  whose only text is titles is refused: headings add no text, so the chunker would make no chunk (Phase 0);
-- Docling keeps a chart's numbers on the chart's picture, which to_blocks() leaves out: each becomes a table block;
-- hidden slides are kept, and each of their blocks carries extra["hidden"] = True (the contract has no field yet);
 - a slide whose title is a plain text box (no title placeholder; 62 of 81 slides in three real decks) gets that
-  text box as its heading, so its chunks cite the slide's topic and not only the deck.
+  text box as its heading, so its chunks cite the slide's topic and not only the deck;
+- each slide's title comes first among its blocks: the chunker starts a section at every heading, so text that
+  Docling put before the title became a chunk of its own (38 of 39 slides in one real deck);
+- to_blocks() gives a picture without words a "[Figure]" block unless it is icon-sized, measured in points, but
+  Docling gives PowerPoint positions in EMU, so no slide picture ever counted as an icon: the rule is applied here;
+- Docling keeps a chart's numbers on the chart's picture, which to_blocks() leaves out: each becomes a table block
+  that carries the chart's figure_id;
+- a slide whose only text is its title, with a picture that is not an icon, is named for the teacher: a "[Figure]"
+  block holds no words a student could search for. A deck whose only text is titles (no picture either) is
+  refused: headings add no text, so the chunker would make no chunk (Phase 0);
+- hidden slides are kept, and each of their blocks carries extra["hidden"] = True (contract 2.1 has no field yet).
 A coverage audit (_pptx_shapes.audit) puts every shape in "extracted", "skipped:<reason>" or "unknown"; unknown
 shapes are logged by slide number and shape type, never by text.
 Slide numbers, speaker notes and reviewers' comments need no rule here: to_blocks() already handles them.
@@ -35,7 +41,8 @@ logger = logging.getLogger("tta.ingestion")
 SOURCE_TYPE: SourceType = "pptx"
 FOOTER_KIND: BlockKind = "paragraph"    # footers reach us as plain paragraphs; headings and notes are never footers
 SLIDES = "Slides"                       # the unit name messages.no_text_units() expects (plural)
-ICON_SIDE_PX = 64                       # figures plan: a picture with a side under 64 px is an icon, not content
+ICON_SIDE_PT = 48                       # to_blocks()'s icon rule: under 48 points on both sides is an icon
+EMU_PER_POINT = 12700                   # Docling gives PowerPoint positions in EMU, PowerPoint's own unit
 TITLE_TOP = 0.5                         # a text-box title starts in the upper half of the slide
 TITLE_NEAR_LARGEST = 0.9                # the topmost text this close to the largest wins: a formula may be bigger
 TITLE_OVER_BODY = 1.25                  # and it must be clearly larger than the slide's other text (median)
@@ -48,7 +55,7 @@ def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
 
     found = extract(path, meta.file_sha256, title_from_filename(meta.file_name))
     if found.blocks and all(b.kind == "heading" for b in found.blocks):
-        raise FileRefused(messages.NO_TEXT_FILE)         # headings add no text: the chunker would make no chunk
+        raise FileRefused(messages.NO_TEXT_FILE)         # titles only: headings add no text, so there'd be no chunk
     return parsed_document(
         meta, title=found.title, blocks=found.blocks,
         parser=converter.PARSER, parser_version=converter.PARSER_VERSION,
@@ -75,9 +82,9 @@ def extract(path: Path, file_sha256: str | None, title: str) -> Extraction:
 
     conversion = converter.convert(path, SOURCE_TYPE, file_sha256)          # a broken file raises FileRefused
     deck = _read_deck(path)                                                 # after convert(): the file is sound
-    raw = to_blocks(conversion.document, SOURCE_TYPE, title)
+    raw = _drop_icon_figures(to_blocks(conversion.document, SOURCE_TYPE, title), conversion.document)
     kept = _drop_footers(raw)
-    blocks = _promote_titles(_own_slide_headings(kept), deck)
+    blocks = _title_first(_promote_titles(_own_slide_headings(kept), deck))
     blocks = _insert(blocks, _chart_tables(conversion.document, blocks, title))
     blocks = _mark_hidden(blocks, deck.hidden_slides)
     blocks = [b.model_copy(update={"seq": i}) for i, b in enumerate(blocks)]
@@ -96,6 +103,15 @@ def _read_deck(path: Path) -> shapes.Deck:
     except Exception as exc:
         logger.warning("pptx shapes pass failed (%s): no hidden flags, audit or extra text", type(exc).__name__)
         return shapes.Deck([])
+
+
+def _drop_icon_figures(blocks: list[Block], doc: "DoclingDocument") -> list[Block]:
+    """Drop the "[Figure]" block of an icon-sized picture, as to_blocks() means to.
+
+    to_blocks() compares a picture's size with 48 in points (PDF) or pixels, but Docling gives PowerPoint positions
+    in EMU (12,700 per point), so on a slide no picture was ever that small. _icon() measures it in points.
+    """
+    return [b for b in blocks if b.kind != "figure" or not _icon(_picture(doc, b.figure_id))]
 
 
 def _drop_footers(blocks: list[Block]) -> list[Block]:
@@ -179,14 +195,37 @@ def _slide_title(slide: shapes.Slide) -> str | None:
     return title.lines[0]
 
 
+def _title_first(blocks: list[Block]) -> list[Block]:
+    """Each slide's first heading moves to the front of that slide's blocks, and what came before it goes under it.
+
+    Docling reads shapes in the order they were added, so a title box added last comes after the slide's other
+    text. The chunker starts a section at every heading, so that text became a chunk of its own, apart from the
+    rest of the slide. Placeholder titles are usually first already; then nothing moves.
+    """
+    out: list[Block] = []
+    for slide in dict.fromkeys(_slide(b) for b in blocks):
+        here = [b for b in blocks if _slide(b) == slide]
+        first = next((i for i, b in enumerate(here) if b.kind == "heading"), 0)     # 0: first already, or none
+        if first:
+            title = here[first]
+            here = [title, *(_with_heading_path(b, title.heading_path) for b in here[:first]), *here[first + 1:]]
+        out += here
+    return out
+
+
 def _with_heading_path(block: Block, heading_path: list[str]) -> Block:
     """A new, validated Block: Pydantic checks an object only when it is created, so one is never edited."""
     return Block.model_validate({**block.model_dump(), "heading_path": heading_path})
 
 
 def _chart_tables(doc: "DoclingDocument", blocks: list[Block], title: str) -> list[Block]:
-    """One table block per chart, from the grid Docling keeps on the chart's picture (meta.tabular_chart)."""
+    """One table block per chart, from the grid Docling keeps on the chart's picture (meta.tabular_chart).
+
+    The table carries the chart's figure_id, as the words inside a picture do: its chunk then lists the chart too.
+    """
     from docling_core.types.doc import DocItemLabel, TableItem
+
+    from app.ingestion.docling_blocks import figure_name
 
     found = []
     for picture in doc.pictures:
@@ -196,17 +235,19 @@ def _chart_tables(doc: "DoclingDocument", blocks: list[Block], title: str) -> li
         table = TableItem(self_ref="#/tables/0", label=DocItemLabel.TABLE, data=chart.chart_data)
         text = table.export_to_markdown(doc=doc).strip()    # the same Markdown to_blocks() writes for a table
         if text:
-            found.append(_new_block("table", text, picture.prov[0].page_no, blocks, title, ref=picture.self_ref))
+            found.append(_new_block("table", text, picture.prov[0].page_no, blocks, title,
+                                    figure_id=figure_name(picture), ref=picture.self_ref))
     return found
 
 
-def _new_block(kind: BlockKind, text: str, slide: int, blocks: list[Block], title: str, **extra: object) -> Block:
+def _new_block(kind: BlockKind, text: str, slide: int, blocks: list[Block], title: str,
+               figure_id: str | None = None, **extra: object) -> Block:
     """A block for content to_blocks() never saw, under the heading path of its slide's content (seq set later)."""
     on_slide = [b for b in blocks if _slide(b) == slide]
     content = [b for b in on_slide if b.kind != "slide_notes"] or on_slide
     path = content[-1].heading_path if content else [title]
     return Block(seq=0, kind=kind, text=text, heading_path=path, loc=Location(slide=slide), lang=detect_lang(text),
-                 extra=extra)
+                 figure_id=figure_id, extra=extra)
 
 
 def _insert(blocks: list[Block], additions: list[Block]) -> list[Block]:
@@ -243,19 +284,28 @@ def _with_extra(block: Block, **extra: object) -> Block:
 def _picture_only_slides(doc: "DoclingDocument", blocks: list[Block]) -> list[str]:
     """Name for the teacher each slide with a picture or a chart whose only text, if any, is its title.
 
-    A title is a heading, and headings add no text to a chunk, so such a slide answers nothing. Icons don't count:
-    a title and a small logo is a section slide, not a missing figure.
+    A title is a heading, and headings add no text to a chunk; a "[Figure]" block holds no words to search for. So
+    such a slide answers nothing until its pictures are described. Icons don't count: a title and a small logo is a
+    section slide, not a missing figure.
     """
-    with_text = {_slide(b) for b in blocks if b.kind != "heading"}
+    with_text = {_slide(b) for b in blocks if b.kind not in ("heading", "figure")}
     with_picture = {prov.page_no for picture in doc.pictures if not _icon(picture) for prov in picture.prov}
     silent = sorted(with_picture - with_text)
     return [messages.no_text_units(SLIDES, silent)] if silent else []
 
 
+def _picture(doc: "DoclingDocument", figure_id: str | None):
+    """The Docling picture a figure_id names: "fig7" is doc.pictures[7] (docling_blocks.figure_name())."""
+    return doc.pictures[int((figure_id or "").removeprefix("fig"))]
+
+
 def _icon(picture) -> bool:
-    """Docling stores each picture's size in pixels; a chart, or a picture it could not store, has none."""
-    size = picture.image.size if picture.image is not None else None
-    return size is not None and min(size.width, size.height) < ICON_SIDE_PX
+    """Shown under 48 points on both sides, to_blocks()'s rule; without a position, its size in pixels decides."""
+    sizes = [(abs(p.bbox.r - p.bbox.l) / EMU_PER_POINT, abs(p.bbox.t - p.bbox.b) / EMU_PER_POINT)
+             for p in picture.prov]
+    if not sizes and picture.image is not None:
+        sizes = [(picture.image.size.width, picture.image.size.height)]
+    return bool(sizes) and all(width < ICON_SIDE_PT and height < ICON_SIDE_PT for width, height in sizes)
 
 
 def _slide(block: Block) -> int:

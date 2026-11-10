@@ -27,7 +27,7 @@ from tests.ingestion.pptx_fixtures import BUILDERS, MIXED_SLIDES, TEXTS, census,
 
 SHORT = {"heading": "H", "paragraph": "P", "list_item": "L", "table": "T", "caption": "C", "figure_text": "FT",
          "slide_notes": "N", "code": "Co", "formula": "Fo", "figure": "F", "transcript": "Tr"}
-FIGURE_KINDS = {"figure", "figure_text", "caption"}      # blocks keeping a figure's trace ("figure" comes in 2.1)
+FIGURE_KINDS = {"figure", "figure_text", "caption"}      # blocks keeping a figure's trace (contract 2.1)
 TITLED = {"title_bullets", "with_notes", "picture_only", "flowchart", "loose_shapes", "grouped", "table", "chart",
           "hidden_slide", "repeated_logo", "tiny_icon"}   # fixtures whose slides have a title
 HAS_NOTES = {"with_notes", "hidden_slide", "repeated_logo", "title_bullets+with_notes"}
@@ -67,8 +67,9 @@ def found(texts: list[str], blocks: list) -> int:
 
 
 def pictures_on(shapes: Any) -> int:
-    """Pictures on one slide, inside groups and placeholders too."""
-    return sum(pictures_on(s.shapes) if isinstance(s, GroupShape) else isinstance(s, Picture) for s in shapes)
+    """Pictures and charts on one slide, inside groups and placeholders too: Docling makes a picture of a chart."""
+    return sum(pictures_on(s.shapes) if isinstance(s, GroupShape)
+               else isinstance(s, Picture) or getattr(s, "has_chart", False) for s in shapes)
 
 
 def yes(flag: bool) -> str:
@@ -151,7 +152,7 @@ def fixture_row(name: str, path: Path) -> str:
     parsed, chunked = getattr(result, "parsed", None), getattr(result, "chunked", None)
     blocks = parsed.blocks if parsed is not None else []
     deck = Presentation(str(path))
-    pictures = census(deck).pictures
+    pictures = census(deck).pictures + census(deck).charts
     slides = len(deck.slides)
     no_chunk = sorted({b.loc.slide for b in blocks} - {c.loc.slide for c in (chunked.chunks if chunked else [])})
     check = CHECKS[name](blocks, chunked, 1)
@@ -201,7 +202,7 @@ def main() -> int:
             decks = {name: write_deck(name, Path(tmp) / "decks") for name in BUILDERS}
             print(f"contract {CONTRACT_VERSION}")
             print("fixture | status | blocks | slide# on all | heading_path | chunks | slides w/o chunk | "
-                  "figure traces/pictures | slides | check")
+                  "figure traces/pictures+charts | slides | check")
             for name in BUILDERS:
                 if name != "mixed_deck":
                     print(fixture_row(name, decks[name]))

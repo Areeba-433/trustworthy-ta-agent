@@ -353,8 +353,7 @@ def audit(deck: Deck, blocks: list, dropped: list[str], title: str) -> list[Entr
     for b in blocks:
         text_on[b.loc.slide].append(norm(b.text))
     dropped_lines = {norm(t) for t in dropped}
-    charts = Counter(b.loc.slide for b in blocks
-                     if b.kind == "table" and b.extra.get("ref", "").startswith("#/pictures/"))
+    charts = Counter(b.loc.slide for b in blocks if b.kind == "table" and b.figure_id)   # a chart's data table
     smartart = Counter(b.loc.slide for b in blocks if b.extra.get("origin") == "smartart")
     entries = []
     for slide in deck.slides:
