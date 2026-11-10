@@ -1,14 +1,15 @@
 """PDF loader (owner: Minahil). Docling reads the book. On Docling's result: remove_chapter_tabs() takes the decoration
-on the page edges out, remove_contents_and_index() the contents and index pages, link_figure_labels() gives a
-picture the "FIGURE 2.3" label Docling read as a heading or left loose, join_caption_lines() gives a caption back
-its description line, and split_long_headings() cuts a heading Docling made of a whole region
-back to the heading. list_headings() makes list items of the bullet points Docling took for headings,
-set_heading_levels() puts each heading under the bigger ones by its size, and name_chapters() calls each chapter's
-heading after the PDF's bookmark ("Chapter 9: Inheritance"). Then to_blocks() makes blocks, restore_code_lines()
-gives code listings their lines back and tells code from sentences by font, mark_exponents() keeps the exponent of a
-power of ten ("10^308"), order_by_position() puts what stands higher on a page first, join_page_listings() makes one
-block of a listing that a page break cut in two, and mark_figures() notes where each figure is, so an answer can
-show it."""
+on the page edges out, remove_contents_and_index() the contents and index pages, add_missed_pictures() adds a
+picture for each image of the PDF that Docling left out entirely (a code screenshot it took for text),
+link_figure_labels() gives a picture the "FIGURE 2.3" label Docling read as a heading or left loose,
+join_caption_lines() gives a caption back its description line, and split_long_headings() cuts a heading Docling
+made of a whole region back to the heading. list_headings() makes list items of the bullet points Docling took for
+headings, set_heading_levels() puts each heading under the bigger ones by its size, and name_chapters() calls each
+chapter's heading after the PDF's bookmark ("Chapter 9: Inheritance"). Then to_blocks() makes blocks,
+restore_code_lines() gives code listings their lines back and tells code from sentences by font, mark_exponents()
+keeps the exponent of a power of ten ("10^308"), order_by_position() puts what stands higher on a page first,
+join_page_listings() makes one block of a listing that a page break cut in two, and mark_figures() notes where each
+figure is, so an answer can show it."""
 from pathlib import Path
 
 from app.ingestion import messages
@@ -22,6 +23,7 @@ from app.ingestion.pdf_exponents import mark_exponents
 from app.ingestion.pdf_figures import join_caption_lines, link_figure_labels, mark_figures
 from app.ingestion.pdf_furniture import remove_chapter_tabs, remove_contents_and_index
 from app.ingestion.pdf_headings import split_long_headings
+from app.ingestion.pdf_images import add_missed_pictures
 from app.ingestion.pdf_order import order_by_position
 from app.ingestion.pdf_structure import join_page_listings, list_headings, name_chapters, set_heading_levels
 from app.ingestion.registry import register
@@ -40,6 +42,8 @@ def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
         remove_chapter_tabs(conversion.document, path)
     with timer("contents"):
         remove_contents_and_index(conversion.document)
+    with timer("missed_pictures"):
+        add_missed_pictures(conversion.document, path)
     with timer("figure_labels"):
         link_figure_labels(conversion.document)
     with timer("captions"):
