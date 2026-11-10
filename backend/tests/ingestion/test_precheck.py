@@ -3,6 +3,7 @@ import pytest
 
 from app.ingestion import messages
 from app.ingestion.precheck import SUPPORTED_EXTENSIONS, UnsupportedFileType, precheck
+from conftest import write_pdf
 
 
 def test_digital_pdf_is_accepted(digital_pdf):
@@ -29,6 +30,33 @@ def test_mostly_scanned_pdf_is_refused(make_pdf):
     result = precheck(make_pdf(scanned=2, text=3))      # 2 pages in 5 have no text: over the limit
     assert not result.ok
     assert result.reason == messages.SCANNED_PDF
+
+
+def _picture_slides(tmp_path, pages: int, cover: float):
+    """Wide pages with no text, each one picture covering `cover` of the page: slides made of screenshots."""
+    width, height = 960, 540
+    side = (cover * width * height) ** 0.5
+    picture = (b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8"
+               b" /Length 4 >>\nstream\n\x00\x80\x80\xff\nendstream")
+    draw = f"q {side * 1.25:.1f} 0 0 {side * 0.8:.1f} 100 50 cm /Im0 Do Q"
+    return write_pdf(tmp_path / "slides.pdf", [draw] * pages, mediabox=(0, 0, width, height), images=[picture])
+
+
+def test_slides_that_are_pictures_are_listed_but_not_refused(tmp_path):
+    """Linear Transformation: each slide a screenshot covering 36-46% of its wide page, no text at all."""
+    result = precheck(_picture_slides(tmp_path, pages=7, cover=0.4))
+    assert result.ok
+    assert result.scanned_pages == [1, 2, 3, 4, 5, 6, 7]       # the loader warns about them
+
+
+def test_pages_that_a_picture_fills_are_still_a_scan(tmp_path):
+    result = precheck(_picture_slides(tmp_path, pages=7, cover=0.6))
+    assert not result.ok
+    assert result.reason == messages.SCANNED_PDF
+
+
+def test_a_small_picture_on_a_page_without_text_is_no_scan(tmp_path):
+    assert precheck(_picture_slides(tmp_path, pages=3, cover=0.2)).scanned_pages == []
 
 
 def test_blank_page_is_not_treated_as_a_scan(tmp_path):

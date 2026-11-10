@@ -196,6 +196,11 @@ def test_a_font_s_drawing_pieces_are_dropped():
     assert _ascii("c1=0 ←\uf8e7\uf8e7\uf8e7 counts") == "c1=0 ← counts"
 
 
+def test_both_bullets_are_the_same_character_in_the_comparison():
+    """Pointers deck (Google Slides): the PDF has "•", Docling read "·": 2 listings kept flat over that alone."""
+    assert _ascii("• int* iptr;") == _ascii("· int* iptr;")
+
+
 def test_the_pdf_s_own_space_separates_words_even_where_a_letter_reaches_into_it():
     """pdfium 156 (pypdfium2 5.14) measures the Times "f" wider than pdfium 153: its box reaches into the space of
     "of type", the gap left was too small to count, and "oftype" matched none of Docling's words."""

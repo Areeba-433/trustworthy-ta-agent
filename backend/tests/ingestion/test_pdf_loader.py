@@ -8,9 +8,9 @@ from app.ingestion.dispatcher import ingest_file
 from app.ingestion.loaders import pdf
 
 
-def _meta(**precheck) -> ResourceMeta:
+def _meta(pages_total: int = 3, **precheck) -> ResourceMeta:
     return ResourceMeta(resource_id="r1", course_id="c1", file_name="dsa_notes.pdf", file_sha256="a" * 64,
-                        precheck=PrecheckResult(source_type="pdf", pages_total=3, **precheck))
+                        precheck=PrecheckResult(source_type="pdf", pages_total=pages_total, **precheck))
 
 
 def test_the_pdf_loader_is_the_one_registered_for_pdf():
@@ -45,10 +45,24 @@ def test_docling_problems_come_first(digital_pdf, monkeypatch, fake_docling_pdf)
         return Conversion(fake_docling_pdf(path, source_type).document, (messages.PARTIAL,))
 
     monkeypatch.setattr(pdf, "convert", partial)
-    doc = pdf.load(digital_pdf, _meta(garbage_pages=[2], scanned_pages=[3]))
+    doc = pdf.load(digital_pdf, _meta(pages_total=10, garbage_pages=[2], scanned_pages=[3]))
     assert doc.quality.status == "degraded"
     assert doc.quality.warnings == [messages.PARTIAL, messages.hard_to_read([2]),
                                     messages.no_text_units("Pages", [3])]
+
+
+def test_a_file_whose_pages_are_mostly_pictures_is_a_problem_the_teacher_sees(digital_pdf):
+    """Slides made of screenshots (Linear Transformation: 6 of 7): accepted, but marked, so the teacher knows."""
+    doc = pdf.load(digital_pdf, _meta(pages_total=7, scanned_pages=[1, 2, 3, 4, 5, 7]))
+    assert doc.quality.status == "degraded"
+    assert doc.quality.warnings == ["6 of 7 pages (1 to 5, 7) are pictures with no readable text, so questions "
+                                    "about them can't be answered yet."]
+
+
+def test_a_few_picture_pages_are_only_a_note(digital_pdf):
+    doc = pdf.load(digital_pdf, _meta(pages_total=10, scanned_pages=[1, 2]))       # 2 in 10: at the limit
+    assert doc.quality.status == "ok"
+    assert doc.quality.warnings == [messages.no_text_units("Pages", [1, 2])]
 
 
 def test_a_cached_result_is_timed_under_its_own_name(digital_pdf, monkeypatch, fake_docling_pdf):

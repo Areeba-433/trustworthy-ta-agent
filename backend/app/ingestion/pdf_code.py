@@ -68,7 +68,8 @@ _SENTENCE_SHARE = 0.2  # a line with this share of its letters in an ordinary fo
 # Docling turns these into plain ASCII in all text; we do the same so both versions can be compared word by word.
 # In code they are wrong anyway: a student who copies “hello” into a compiler gets an error.
 _ASCII = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', "⁄": "/", "\x02": "-",
-                        "—": "-", "–": "-"})               # long dashes: book page 168, "variable—dining—of"
+                        "—": "-", "–": "-",                # long dashes: book page 168, "variable—dining—of"
+                        "•": "·"})                         # a bullet Docling reads as "·" (Google Slides' Calibri)
 _LIGATURES = range(0xFB00, 0xFB07)                      # ﬀ ﬁ ﬂ ﬃ ﬄ ﬅ ﬆ
 _PRIVATE = range(0xE000, 0xF900)    # a font's own drawing pieces (the OOP book's long arrows): no character at all
 

@@ -9,6 +9,7 @@ Pictures are not read (no OCR), but none is lost: a picture's caption and the wo
 figure_id ("fig7" for Docling's #/pictures/7), and a picture with no words of its own becomes a "[Figure]"
 block, unless it is icon-sized. The chunker copies those ids into the chunks (contract 2.1).
 """
+import re
 from collections.abc import Iterator
 
 from docling_core.types.doc import (ContentLayer, DocItem, DocItemLabel, DoclingDocument, GroupItem, GroupLabel,
@@ -37,6 +38,7 @@ _LAYERS = {ContentLayer.BODY, ContentLayer.NOTES}           # FURNITURE (headers
 _FORMATS: set[SourceType] = {"pdf", "docx", "pptx"}
 FIGURE_PLACEHOLDER = "[Figure]"     # the text of a picture that has no caption and no words inside it
 _ICON = 48                          # points (PDF) or pixels: a picture under this on both sides is an icon
+_BULLET = re.compile(r"^[·•▪◦‣●○■□►]\s*")    # a list item's own bullet, left in its text
 
 
 def to_blocks(doc: DoclingDocument, source_type: SourceType, title: str) -> list[Block]:
@@ -133,6 +135,7 @@ def _text(item: DocItem, kind: BlockKind, doc: DoclingDocument) -> str:
         return raw.strip("\n") if raw.strip() else ""             # keep indentation and line breaks
     text = clean_text(raw)
     if text and kind == "list_item" and isinstance(item, ListItem):
+        text = _BULLET.sub("", text) or text         # a bullet Docling left in the text: "·Pointers are..."
         marker = item.marker if item.enumerated and item.marker else "-"
         text = f"{marker} {text}"
     return text

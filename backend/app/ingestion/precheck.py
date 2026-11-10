@@ -22,7 +22,10 @@ _MAGIC: dict[str, tuple[bytes, ...]] = {            # the signature each file ty
     "pptx": (b"PK\x03\x04",)
 }
 MIN_LETTERS_PER_PAGE = 25      # starting values: tune them on real samples later
-SCANNED_IMAGE_SHARE = 0.5
+SCANNED_IMAGE_SHARE = 0.5      # almost no text and pictures over half the page: a scanned page
+PICTURE_PAGE_SHARE = 0.3       # almost no text and pictures over this much: its text is in a picture. A slide made of
+                               # a screenshot in white margins covers 36-46% of its wide page: listed like a scan, but
+                               # never a reason to refuse the file (teachers' slides; real scans fill their page)
 LARGE_IMAGE_SHARE = 0.3
 GARBAGE_MAX = 0.15
 UNREADABLE_SHARE_MAX = 0.2     # more than 1 page in 5 without readable text: treat the file as a scan and refuse it
@@ -78,6 +81,7 @@ def _check_pdf(path: Path) -> PrecheckResult:
         password = "password" in str(err).lower()
         return _fail("pdf", messages.PASSWORD_PROTECTED if password else messages.UNREADABLE)
     scanned, garbage, large = [], [], []
+    scans = 0
     try:
         total = len(pdf)
         for i in range(total):
@@ -85,16 +89,17 @@ def _check_pdf(path: Path) -> PrecheckResult:
             text = page.get_textpage().get_text_range()
             letters = sum(ch.isalnum() for ch in text)        # counts Urdu letters too
             share = _image_share(page)
-            if letters < MIN_LETTERS_PER_PAGE and share >= SCANNED_IMAGE_SHARE:
-                scanned.append(i + 1)                        # almost no text, mostly picture: a scan
+            if letters < MIN_LETTERS_PER_PAGE and share >= PICTURE_PAGE_SHARE:
+                scanned.append(i + 1)                        # almost no text, a big picture: no readable text
+                scans += share >= SCANNED_IMAGE_SHARE        # mostly picture: a scan
             elif letters >= MIN_LETTERS_PER_PAGE and garbage_share(text) > GARBAGE_MAX:
                 garbage.append(i + 1)                        # has text, but it's broken
             if share >= LARGE_IMAGE_SHARE:
                 large.append(i + 1)
     finally:
         pdf.close()
-    if total and (len(scanned) + len(garbage)) / total > UNREADABLE_SHARE_MAX:   # mostly pictures or broken text
-       return _fail("pdf", messages.SCANNED_PDF if len(scanned) >= len(garbage) else messages.GARBLED_PDF)
+    if total and (scans + len(garbage)) / total > UNREADABLE_SHARE_MAX:   # mostly scanned pages or broken text
+        return _fail("pdf", messages.SCANNED_PDF if scans >= len(garbage) else messages.GARBLED_PDF)
     return PrecheckResult(                  # a few unreadable pages are listed so the loader can skip and report them
         source_type="pdf", pages_total=total,
         scanned_pages=scanned, garbage_pages=garbage, large_image_pages=large,

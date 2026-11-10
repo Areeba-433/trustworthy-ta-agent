@@ -86,6 +86,34 @@ def test_an_image_at_the_same_place_on_three_pages_is_a_decoration(tmp_path, pag
     assert add_missed_pictures(doc, path) == added
 
 
+def test_an_empty_box_docling_drew_over_an_image_does_not_hide_it(tmp_path):
+    """Linear Transformation: Docling put "formulas" with no text over the equations in each slide's screenshot."""
+    path = _pdf(tmp_path, [_draw(79, 54, 653, 342)])
+    doc = _doc()
+    doc.add_text(DocItemLabel.FORMULA, "", prov=ProvenanceItem(page_no=1, bbox=_box(241, 341, 517, 362),
+                                                              charspan=(0, 0)))
+    assert add_missed_pictures(doc, path) == 1
+
+
+def test_a_picture_docling_found_in_a_piece_of_an_image_grows_to_the_whole_image(tmp_path):
+    """Linear Transformation slide 1: Docling found only the diagram in the screenshot of a slide."""
+    path = _pdf(tmp_path, [_draw(100, 100, 400, 300)])
+    doc = _doc()
+    doc.add_picture(prov=ProvenanceItem(page_no=1, bbox=_box(300, 150, 450, 300), charspan=(0, 0)))
+    assert add_missed_pictures(doc, path) == 0
+    assert [p.prov[0].bbox for p in doc.pictures] == [_box(100, 100, 500, 400)]
+
+
+def test_a_picture_on_a_background_does_not_grow(tmp_path):
+    """A slide's title on its full-page template, and a diagram Docling found on it: the template is no figure."""
+    path = _pdf(tmp_path, [_draw(0, 0, 612, 792)])
+    doc = _doc()
+    _text(doc, "A slide's title over its template.", 1, (72, 600, 540, 700))
+    doc.add_picture(prov=ProvenanceItem(page_no=1, bbox=_box(100, 100, 300, 300), charspan=(0, 0)))
+    assert add_missed_pictures(doc, path) == 0
+    assert doc.pictures[0].prov[0].bbox == _box(100, 100, 300, 300)
+
+
 def test_an_icon_is_not_added(tmp_path):
     path = _pdf(tmp_path, [_draw(72, 160, 12, 12, image=1)])           # the 12-point "@" chip of a video link
     assert add_missed_pictures(_doc(), path) == 0
