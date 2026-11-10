@@ -19,6 +19,11 @@ def _prov(page: int) -> ProvenanceItem:
     return ProvenanceItem(page_no=page, bbox=BoundingBox(l=0, t=0, r=1, b=1), charspan=(0, 0))
 
 
+def _picture_prov(page: int, width: float = 300, height: float = 200) -> ProvenanceItem:
+    """A picture's place: 300 x 200 points unless told, far bigger than an icon."""
+    return ProvenanceItem(page_no=page, bbox=BoundingBox(l=0, t=height, r=width, b=0), charspan=(0, 0))
+
+
 def _blocks(doc: DoclingDocument, source_type: SourceType = "pdf") -> list[Block]:
     """to_blocks(), plus the contract check every loader runs on its result."""
     blocks = to_blocks(doc, source_type, TITLE)
@@ -125,6 +130,52 @@ def test_empty_texts_and_stray_page_numbers_are_dropped_without_gaps_in_seq():
     doc.add_code("\n\n", prov=_prov(1))
     doc.add_text(DocItemLabel.TEXT, "Second.", prov=_prov(2))
     assert [(b.seq, b.text) for b in _blocks(doc)] == [(0, "First."), (1, "Second.")]
+
+
+def test_a_figures_caption_and_the_words_inside_it_carry_its_id():
+    doc = DoclingDocument(name="t")
+    doc.add_heading("Linked Lists", level=1, prov=_prov(2))
+    first = doc.add_picture(prov=_picture_prov(2))                          # Docling's #/pictures/0
+    doc.add_text(DocItemLabel.TEXT, "head", parent=first, prov=_prov(2))
+    second = doc.add_picture(prov=_picture_prov(3))                         # #/pictures/1
+    caption = doc.add_text(DocItemLabel.CAPTION, "Figure 3.2: Deleting a node", prov=_prov(3))  # not inside it
+    second.captions.append(caption.get_ref())
+    doc.add_text(DocItemLabel.TEXT, "A node is deleted by relinking.", prov=_prov(3))
+    assert [(b.kind, b.text, b.figure_id) for b in _blocks(doc)] == [
+        ("heading", "Linked Lists", None), ("figure_text", "head", "fig0"),
+        ("caption", "Figure 3.2: Deleting a node", "fig1"), ("paragraph", "A node is deleted by relinking.", None),
+    ]
+
+
+def test_a_picture_without_words_becomes_one_figure_block_where_it_stands():
+    doc = DoclingDocument(name="t")
+    doc.add_heading("Stacks", level=1, prov=_prov(4))
+    doc.add_text(DocItemLabel.TEXT, "Push puts a value on top.", prov=_prov(4))
+    doc.add_picture(prov=_picture_prov(5))
+    doc.add_text(DocItemLabel.TEXT, "Pop takes it off.", prov=_prov(5))
+    blocks = _blocks(doc)
+    assert [(b.kind, b.text, b.figure_id, b.loc.page) for b in blocks] == [
+        ("heading", "Stacks", None, 4), ("paragraph", "Push puts a value on top.", None, 4),
+        ("figure", "[Figure]", "fig0", 5), ("paragraph", "Pop takes it off.", None, 5),
+    ]
+    assert blocks[2].heading_path == [TITLE, "Stacks"]
+
+
+def test_an_icon_gets_no_block_and_a_picture_with_words_gets_no_placeholder():
+    doc = DoclingDocument(name="t")
+    doc.add_picture(prov=_picture_prov(1, width=20, height=20))            # an icon: left out
+    picture = doc.add_picture(prov=_picture_prov(1))
+    doc.add_text(DocItemLabel.TEXT, "top", parent=picture, prov=_prov(1))
+    doc.add_text(DocItemLabel.TEXT, "After the figure.", prov=_prov(1))
+    assert [(b.kind, b.text, b.figure_id) for b in _blocks(doc)] == [
+        ("figure_text", "top", "fig1"), ("paragraph", "After the figure.", None),
+    ]
+
+
+def test_a_picture_with_no_size_and_no_words_still_gets_a_figure_block():
+    doc = DoclingDocument(name="t")
+    doc.add_picture()                                                      # e.g. a Word picture: no page, no box
+    assert [(b.kind, b.figure_id) for b in _blocks(doc, "docx")] == [("figure", "fig0")]
 
 
 def test_formats_docling_does_not_read_are_refused():
