@@ -9,7 +9,7 @@ from app.ingestion.converter import Conversion
 from app.ingestion.dispatcher import ingest_file
 from app.ingestion.docling_blocks import to_blocks
 from app.ingestion.loaders import pdf
-from app.ingestion.pdf_figures import join_caption_lines, mark_figures, render_figure
+from app.ingestion.pdf_figures import join_caption_lines, link_figure_labels, mark_figures, render_figure
 
 # The black rectangle of the figure_pdf fixture, as fractions of its 595 x 842 page from the top-left corner
 RECTANGLE = [round(100 / 595, 4), round((842 - 500) / 842, 4), round(400 / 595, 4), round((842 - 300) / 842, 4)]
@@ -102,3 +102,87 @@ def test_a_line_that_is_not_the_caption_s_stays_where_it_is(caption, gap, left):
     doc = _captioned(caption, DocItemLabel.TEXT, gap, left)
     assert join_caption_lines(doc) == 0
     assert len(to_blocks(doc, "pdf", "OOP book")) == 3
+
+
+# ================================================================ link_figure_labels(): step 14a
+
+def _labelled(label: str = "FIGURE 2.3", kind: DocItemLabel = DocItemLabel.SECTION_HEADER,
+              box: tuple[float, float, float, float] = (56, 379, 98, 388), page: int = 1) -> DoclingDocument:
+    """A page like book page 65: section "Variables", a figure, its label in the margin under the figure's left
+    edge (Docling read it as a heading), the description right under the label, then the text goes on."""
+    doc = DoclingDocument(name="b")
+    for n in (1, 2):
+        doc.add_page(page_no=n, size=Size(width=595, height=842))
+    doc.add_heading("Variables", level=1, prov=prov(56, 700, 200, 712))
+    doc.add_text(DocItemLabel.TEXT, "A variable has a name and a value.", prov=prov(56, 650, 500, 662))
+    doc.add_picture(prov=prov(100, 400, 400, 600))
+    where = prov(*box)
+    where.page_no = page
+    if kind == DocItemLabel.SECTION_HEADER:
+        doc.add_heading(label, level=1, prov=where)
+    else:
+        doc.add_text(kind, label, prov=where)
+    doc.add_text(DocItemLabel.TEXT, "Variable of type int in memory.", prov=prov(56, 368, 160, 375))
+    doc.add_text(DocItemLabel.TEXT, "Each variable has an address.", prov=prov(56, 330, 500, 342))
+    return doc
+
+
+def _fixed_blocks(doc: DoclingDocument) -> list:
+    """The PDF loader's order: labels first, then caption lines, then blocks."""
+    link_figure_labels(doc)
+    join_caption_lines(doc)
+    return mark_figures(to_blocks(doc, "pdf", "OOP book"), doc)
+
+
+def test_a_figure_label_read_as_a_heading_becomes_the_figures_caption_with_its_description():
+    doc = _labelled()
+    blocks = _fixed_blocks(doc)
+    assert [(b.kind, b.text, b.figure_id) for b in blocks] == [
+        ("heading", "Variables", None),
+        ("paragraph", "A variable has a name and a value.", None),
+        ("caption", "FIGURE 2.3 Variable of type int in memory.", "fig0"),
+        ("paragraph", "Each variable has an address.", None),
+    ]
+    assert blocks[-1].heading_path == ["OOP book", "Variables"]           # not "... > FIGURE 2.3"
+    assert blocks[2].extra["figure"]["page"] == 1
+
+
+@pytest.mark.parametrize("kind", [DocItemLabel.CAPTION, DocItemLabel.TEXT])
+def test_a_loose_label_under_a_figure_becomes_its_caption(kind):
+    doc = _labelled(kind=kind)
+    assert link_figure_labels(doc) == 1
+    assert [ref.resolve(doc).text for ref in doc.pictures[0].captions] == ["FIGURE 2.3"]
+
+
+@pytest.mark.parametrize("label, kind, box, page", [
+    ("FIGURE 2.3", DocItemLabel.SECTION_HEADER, (56, 330, 98, 339), 1),          # 61 points below the figure
+    ("FIGURE 2.3", DocItemLabel.SECTION_HEADER, (56, 379, 98, 388), 2),          # on the next page
+    ("FIGURE 2.3", DocItemLabel.SECTION_HEADER, (20, 379, 60, 388), 1),          # ends 40 points short of it
+    ("Figure 2.3 shows a variable.", DocItemLabel.TEXT, (56, 379, 300, 388), 1),  # a sentence, not a label
+    ("Variables in memory", DocItemLabel.SECTION_HEADER, (56, 379, 200, 388), 1),  # a real heading
+], ids=["too-far-below", "other-page", "off-to-the-side", "a-sentence", "a-heading"])
+def test_text_that_is_not_the_figures_label_is_left_alone(label, kind, box, page):
+    doc = _labelled(label, kind, box, page)
+    assert link_figure_labels(doc) == 0
+    assert doc.pictures[0].captions == []
+
+
+def test_a_label_alone_wins_over_a_caption_that_goes_on():
+    doc = _labelled("FIGURE 2.10")                                           # the label, 12 points down
+    doc.add_text(DocItemLabel.CAPTION, "Figure 2.10 emphasizes the operator.", prov=prov(100, 392, 400, 398))
+    link_figure_labels(doc)
+    assert [ref.resolve(doc).text for ref in doc.pictures[0].captions] == ["FIGURE 2.10"]
+
+
+def test_a_figure_that_has_a_caption_keeps_it_and_takes_no_other_label():
+    doc = _labelled()
+    caption = doc.add_text(DocItemLabel.CAPTION, "FIGURE 2.2 A variable.", prov=prov(100, 605, 400, 615))
+    doc.pictures[0].captions.append(caption.get_ref())
+    assert link_figure_labels(doc) == 0
+    assert any(b.kind == "heading" and b.text == "FIGURE 2.3" for b in to_blocks(doc, "pdf", "OOP book"))
+
+
+def test_a_figure_with_no_words_gets_a_placed_figure_block():
+    doc = _labelled("Variables in memory")                                    # no label at all
+    figure = [b for b in mark_figures(to_blocks(doc, "pdf", "OOP book"), doc) if b.kind == "figure"]
+    assert [(b.text, b.figure_id, b.extra["figure"]["page"]) for b in figure] == [("[Figure]", "fig0", 1)]

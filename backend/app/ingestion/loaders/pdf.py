@@ -1,6 +1,7 @@
 """PDF loader (owner: Minahil). Docling reads the book. On Docling's result: remove_chapter_tabs() takes the decoration
-on the page edges out, remove_contents_and_index() the contents and index pages, join_caption_lines() gives a
-caption back a line Docling took for a footer, and split_long_headings() cuts a heading Docling made of a whole region
+on the page edges out, remove_contents_and_index() the contents and index pages, link_figure_labels() gives a
+picture the "FIGURE 2.3" label Docling read as a heading or left loose, join_caption_lines() gives a caption back
+its description line, and split_long_headings() cuts a heading Docling made of a whole region
 back to the heading. Then to_blocks() makes blocks, restore_code_lines() gives code listings their lines back and
 tells code from sentences by font, mark_exponents() keeps the exponent of a power of ten ("10^308"),
 order_by_position() puts what stands higher on a page first, and mark_figures() notes where each figure is, so an
@@ -15,7 +16,7 @@ from app.ingestion.docling_blocks import to_blocks
 from app.ingestion.documents import parsed_document
 from app.ingestion.pdf_code import restore_code_lines
 from app.ingestion.pdf_exponents import mark_exponents
-from app.ingestion.pdf_figures import join_caption_lines, mark_figures
+from app.ingestion.pdf_figures import join_caption_lines, link_figure_labels, mark_figures
 from app.ingestion.pdf_furniture import remove_chapter_tabs, remove_contents_and_index
 from app.ingestion.pdf_headings import split_long_headings
 from app.ingestion.pdf_order import order_by_position
@@ -35,6 +36,8 @@ def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
         remove_chapter_tabs(conversion.document, path)
     with timer("contents"):
         remove_contents_and_index(conversion.document)
+    with timer("figure_labels"):
+        link_figure_labels(conversion.document)
     with timer("captions"):
         join_caption_lines(conversion.document)
     with timer("headings"):

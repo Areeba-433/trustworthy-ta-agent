@@ -2,6 +2,8 @@
 
 A figure is a picture. Its words cannot be searched (we do no OCR), and OCR would lose what a diagram means anyway:
 its arrows. So nothing is turned into text here. Instead:
+- link_figure_labels() gives a picture the "FIGURE 2.3" label printed right above or below it, when Docling did not:
+  it read 27 such labels in the OOP book as headings and left 9 more as loose captions.
 - mark_figures() writes the figure's place into the blocks that belong to it, its caption and the words drawn
   inside it: extra["figure"] = {"page": 424, "box": [left, top, right, bottom]}, the box as fractions of the visible
   page, measured from its top-left corner. Retrieval finds the caption ("FIGURE 9.7 Public and private derivation")
@@ -18,7 +20,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import pypdfium2 as pdfium
-from docling_core.types.doc import ContentLayer, DocItemLabel, DoclingDocument, PictureItem
+from docling_core.types.doc import ContentLayer, DocItemLabel, DoclingDocument, PictureItem, TextItem
 
 from app.ingestion.contract import Block
 
@@ -26,6 +28,76 @@ _MARGIN = 6.0           # points around the figure, so a cut-out never clips its
 _CAPTION_GAP = 6.0      # points: a line this close under a caption, starting where it starts, is the caption's own
 _SAME_LEFT = 3.0        # points
 _LABEL = re.compile(r"(?i)(?:figure|fig\.|table)\s+[\w.-]+")    # a caption that is only its label: "FIGURE 5.7"
+_FIGURE_LABEL = re.compile(r"(?i)(?:figure|fig\.)\s*\d+(?:\.\d+)*[.:]?")   # "FIGURE 2.3", "Fig. 4", "Figure 3.1:"
+_LABEL_GAP = 40.0       # points: a figure's own label stands this close above or below it (OOP book: 12 to 33)
+_SIDE_SLACK = 30.0      # points: a label may start in the margin and end this far short of the figure (OOP book: 23)
+_LABEL_KINDS = {DocItemLabel.SECTION_HEADER, DocItemLabel.TITLE, DocItemLabel.TEXT, DocItemLabel.PARAGRAPH,
+                DocItemLabel.CAPTION}
+
+
+def link_figure_labels(doc: DoclingDocument) -> int:
+    """Give each picture without a caption the figure label printed right above or below it ("FIGURE 2.3").
+
+    Docling reads such a label as a heading (27 times in the OOP book: "## FIGURE 2.3" then split its section and
+    went into the heading path of the text after it), as plain text, or as a caption it never links to the picture.
+    The label must be on the picture's page, stand at most 40 points above or below it, and reach to within 30 points
+    of it from the side: the OOP book prints it in the margin, ending up to 23 points short of the figure's left edge.
+    A label alone ("FIGURE 2.3") wins over a caption that goes on ("Figure 2.10 emphasizes ..."), then the nearest.
+    A heading or text becomes a caption in the same place, and the old item moves to the furniture layer, so no
+    reference changes. join_caption_lines() then adds the description under the label. Changes `doc` in place;
+    returns how many pictures got their label. Runs before join_caption_lines() and to_blocks()."""
+    taken = {ref.cref for item in [*doc.pictures, *doc.tables] for ref in item.captions}
+    linked = 0
+    for picture in doc.pictures:
+        if picture.content_layer != ContentLayer.BODY or len(picture.prov) != 1 or _has_caption(picture, doc):
+            continue
+        label = _nearest_label(picture, doc, taken)
+        if label is None:
+            continue
+        caption = label if label.label == DocItemLabel.CAPTION else _as_caption(label, doc)
+        picture.captions.append(caption.get_ref())
+        taken.update({label.self_ref, caption.self_ref})
+        linked += 1
+    return linked
+
+
+def _has_caption(picture: PictureItem, doc: DoclingDocument) -> bool:
+    return any((getattr(ref.resolve(doc), "text", "") or "").strip() for ref in picture.captions)
+
+
+def _nearest_label(picture: PictureItem, doc: DoclingDocument, taken: set[str]) -> TextItem | None:
+    page_no = picture.prov[0].page_no
+    if page_no not in doc.pages:
+        return None
+    height = doc.pages[page_no].size.height
+    figure = picture.prov[0].bbox.to_top_left_origin(height)
+    best: tuple[tuple[bool, float], TextItem] | None = None
+    for item in doc.texts:
+        if item.self_ref in taken or item.label not in _LABEL_KINDS or item.content_layer != ContentLayer.BODY \
+                or len(item.prov) != 1 or item.prov[0].page_no != page_no:
+            continue
+        text = item.text.strip()
+        alone = bool(_FIGURE_LABEL.fullmatch(text))
+        if not alone and not (item.label == DocItemLabel.CAPTION and _FIGURE_LABEL.match(text)):
+            continue
+        box = item.prov[0].bbox.to_top_left_origin(height)
+        if min(box.r, figure.r) - max(box.l, figure.l) <= -_SIDE_SLACK:
+            continue                                      # off to one side, not above or below the picture
+        gap = max(box.t - figure.b, figure.t - box.b, 0.0)    # 0 when the label stands inside the picture's box
+        if gap > _LABEL_GAP:
+            continue
+        key = (not alone, gap)
+        if best is None or key < best[0]:
+            best = (key, item)
+    return best[1] if best else None
+
+
+def _as_caption(item: TextItem, doc: DoclingDocument) -> TextItem:
+    """A caption with the item's words and place, right after it; the item itself moves to the furniture layer."""
+    caption = doc.insert_text(sibling=item, label=DocItemLabel.CAPTION, text=item.text, orig=item.orig or item.text,
+                              prov=item.prov[0], after=True)
+    item.content_layer = ContentLayer.FURNITURE
+    return caption
 
 
 def join_caption_lines(doc: DoclingDocument) -> int:
@@ -61,12 +133,13 @@ def join_caption_lines(doc: DoclingDocument) -> int:
 
 
 def mark_figures(blocks: Sequence[Block], doc: DoclingDocument) -> list[Block]:
-    """The same blocks; the caption and inner words of every placed figure get extra["figure"]."""
+    """The same blocks; the caption, inner words and "[Figure]" block of every placed figure get extra["figure"]."""
     figure_of: dict[str, dict] = {}                       # Docling id of a caption or an inner word -> its figure
     for picture in doc.pictures:
         figure = _place(picture, doc)
         if figure is None:
             continue
+        figure_of[picture.self_ref] = figure              # its "[Figure]" block, when it has no words of its own
         for ref in picture.captions:
             figure_of[ref.cref] = figure
         for item, _ in doc.iterate_items(root=picture, traverse_pictures=True):
