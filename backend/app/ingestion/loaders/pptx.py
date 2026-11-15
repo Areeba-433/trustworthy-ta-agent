@@ -14,7 +14,9 @@ Each rule answers something measured on Docling 2.134.0 (step 1 of the PPTX plan
 - a slide whose only text is its title, with a picture that is not an icon, is named for the teacher: a "[Figure]"
   block holds no words a student could search for. A deck whose only text is titles (no picture either) is
   refused: headings add no text, so the chunker would make no chunk (Phase 0);
-- hidden slides are kept, and each of their blocks carries extra["hidden"] = True (contract 2.1 has no field yet).
+- hidden slides are kept, and each of their blocks carries extra["hidden"] = True (contract 2.1 has no field yet);
+- where the blocks stand on the slide decides their order, footers, code, number cells and section labels
+  (_pptx_layout): Docling reads a slide in rows, which mixes side-by-side parts.
 A coverage audit (_pptx_shapes.audit) puts every shape in "extracted", "skipped:<reason>" or "unknown"; unknown
 shapes are logged by slide number and shape type, never by text.
 Slide numbers, speaker notes and reviewers' comments need no rule here: to_blocks() already handles them.
@@ -30,8 +32,10 @@ from app.ingestion import messages
 from app.ingestion.cleaning.common import detect_lang, find_repeated_lines, is_repeated, title_from_filename
 from app.ingestion.contract import Block, BlockKind, Location, ParsedDocument, ResourceMeta, SourceType
 from app.ingestion.documents import FileRefused, parsed_document
+from app.ingestion.loaders import _pptx_layout as layout
 from app.ingestion.loaders import _pptx_shapes as shapes
 from app.ingestion.registry import register
+from app.ingestion.storage import Timer
 
 if TYPE_CHECKING:                       # type hints only: importing docling-core takes seconds
     from docling_core.types.doc import DoclingDocument
@@ -56,12 +60,14 @@ def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
     found = extract(path, meta.file_sha256, title_from_filename(meta.file_name))
     if found.blocks and all(b.kind == "heading" for b in found.blocks):
         raise FileRefused(messages.NO_TEXT_FILE)         # titles only: headings add no text, so there'd be no chunk
-    return parsed_document(
+    doc = parsed_document(
         meta, title=found.title, blocks=found.blocks,
         parser=converter.PARSER, parser_version=converter.PARSER_VERSION,
         units_total=len(found.document.pages),           # every slide, empty and hidden ones included
         problems=found.problems,
     )
+    doc.quality.seconds_taken.update(found.seconds)      # each step's seconds, as the PDF loader reports them
+    return doc
 
 
 @dataclass(frozen=True)
@@ -74,26 +80,42 @@ class Extraction:
     blocks: list[Block]
     coverage: list[shapes.Entry]
     problems: list[str]
+    seconds: dict[str, float]
 
 
 def extract(path: Path, file_sha256: str | None, title: str) -> Extraction:
     from app.ingestion import converter
     from app.ingestion.docling_blocks import to_blocks   # 2 s to import (step 1)
 
-    conversion = converter.convert(path, SOURCE_TYPE, file_sha256)          # a broken file raises FileRefused
-    deck = _read_deck(path)                                                 # after convert(): the file is sound
-    raw = _drop_icon_figures(to_blocks(conversion.document, SOURCE_TYPE, title), conversion.document)
-    kept = _drop_footers(raw)
-    blocks = _title_first(_promote_titles(_own_slide_headings(kept), deck))
-    blocks = _insert(blocks, _chart_tables(conversion.document, blocks, title))
-    blocks = _mark_hidden(blocks, deck.hidden_slides)
+    timer = Timer()
+    with timer("docling"):
+        conversion = converter.convert(path, SOURCE_TYPE, file_sha256)      # a broken file raises FileRefused
+    if conversion.from_cache:                            # say so, or a cached run looks like a very fast Docling
+        timer.seconds["docling_cache"] = timer.seconds.pop("docling")
+    doc = conversion.document
+    with timer("shapes"):
+        deck = _read_deck(path)                                             # after convert(): the file is sound
+    with timer("blocks"):
+        raw = _drop_icon_figures(to_blocks(doc, SOURCE_TYPE, title), doc)
+    with timer("slide_rules"):
+        kept = layout.drop_position_footers(_drop_footers(raw), doc)
+        blocks = _promote_titles(_own_slide_headings(kept), deck)
+    with timer("layout"):
+        monospace = {(s.slide, s.emu) for slide in deck.slides for s in slide.shapes if s.monospace and s.emu}
+        blocks = layout.code_blocks(blocks, doc, monospace)
+        blocks = layout.reading_order(layout.number_cells(blocks, doc, title), doc)
+        blocks = layout.section_labels(_title_first(blocks), doc)
+    with timer("charts_figures"):
+        blocks = layout.mark_figures(layout.insert(blocks, _chart_tables(doc, blocks, title)), doc)
+        blocks = _mark_hidden(blocks, deck.hidden_slides)
     blocks = [b.model_copy(update={"seq": i}) for i, b in enumerate(blocks)]
-    kept_seqs = {b.seq for b in kept}
-    footers = [b.text for b in raw if b.seq not in kept_seqs]                # what _drop_footers() took out
-    coverage = shapes.audit(deck, blocks, footers, title)
-    _log_coverage(coverage)
-    problems = [*conversion.problems, *_picture_only_slides(conversion.document, blocks)]
-    return Extraction(title, conversion.document, deck, blocks, coverage, problems)
+    with timer("audit"):
+        kept_seqs = {b.seq for b in kept}
+        footers = [b.text for b in raw if b.seq not in kept_seqs]           # what the footer rules took out
+        coverage = shapes.audit(deck, blocks, footers, title)
+        _log_coverage(coverage)
+    problems = [*conversion.problems, *_picture_only_slides(doc, blocks)]
+    return Extraction(title, doc, deck, blocks, coverage, problems, timer.seconds)
 
 
 def _read_deck(path: Path) -> shapes.Deck:
@@ -248,19 +270,6 @@ def _new_block(kind: BlockKind, text: str, slide: int, blocks: list[Block], titl
     path = content[-1].heading_path if content else [title]
     return Block(seq=0, kind=kind, text=text, heading_path=path, loc=Location(slide=slide), lang=detect_lang(text),
                  figure_id=figure_id, extra=extra)
-
-
-def _insert(blocks: list[Block], additions: list[Block]) -> list[Block]:
-    """Each new block goes at the end of its slide's content, before that slide's speaker notes.
-
-    seq is left as it is: parsed_document() numbers every block again, 0, 1, 2 ..., in this order.
-    """
-    out = list(blocks)
-    for new in additions:
-        slide = _slide(new)
-        notes = [i for i, b in enumerate(out) if _slide(b) == slide and b.kind == "slide_notes"]
-        out.insert(notes[0] if notes else sum(1 for b in out if _slide(b) <= slide), new)
-    return out
 
 
 def _log_coverage(coverage: list[shapes.Entry]) -> None:

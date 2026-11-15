@@ -105,6 +105,22 @@ def under_own_title(blocks: list) -> bool:
     return bool(blocks) and all(b.heading_path[1:2] == [titles.get(b.loc.slide)] for b in blocks)
 
 
+def consecutive(texts: list[str], wanted: list[str]) -> bool:
+    places = [texts.index(text) if text in texts else -1 for text in wanted]
+    return -1 not in places and places == list(range(places[0], places[0] + len(places)))
+
+
+def layout_check(blocks: list) -> str:
+    """The slide_layout deck: rows of cells, both halves and the cards in order, code, footer, section labels."""
+    texts, layout = [b.text for b in blocks], TEXTS["layout"]
+    halves = [layout["halves"][0], *layout["pairs"][:2], layout["halves"][1], *layout["pairs"][2:]]
+    cards = [text for pair in zip(layout["cases"], layout["values"]) for text in pair]
+    sections = len({b.loc.slide for b in blocks if len(b.heading_path) == 3})
+    return (f"cells row {yes(' '.join(layout['cells']) in texts)}, columns {yes(consecutive(texts, halves))}, "
+            f"cards {yes(consecutive(texts, cards))}, code {sum(b.kind == 'code' for b in blocks)}/2, "
+            f"footer dropped {yes(not any('footer' in text for text in texts))}, sections {sections}/4")
+
+
 def order_kept(blocks: list) -> bool:
     joined = "\n".join(b.text for b in blocks)
     places = [joined.find(text) for text in TEXTS["order"]]
@@ -132,6 +148,7 @@ CHECKS: dict[str, Callable[[list, Any, int], str]] = {
     "reading_order": lambda b, c, s: f"order kept {yes(order_kept(b))}",
     "text_box_titles": lambda b, c, s: f"headings {sum(x.kind == 'heading' for x in b)}/2, "
                                        f"under own title {yes(under_own_title(b))}",
+    "slide_layout": lambda b, c, s: layout_check(b),
 }
 
 

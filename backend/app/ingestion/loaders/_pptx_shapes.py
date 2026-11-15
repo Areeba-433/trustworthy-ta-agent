@@ -3,6 +3,8 @@
 - Which slides are hidden.
 - Where each top-level shape starts (as a share of the slide height) and its largest font size, inherited the
   way PowerPoint does for a text box, so the loader can tell a title typed in a text box from the text under it.
+- Each shape's box as python-pptx reports it (Docling uses the same numbers) and whether its text is set in a
+  fixed-width font, so the loader can find a shape's paragraphs among Docling's and tell code from prose.
 - Every shape on every slide, walked in the slide XML, groups and mc:AlternateContent included, with its own text,
   so the loader can audit where each shape's content went (audit() below).
 - Text Docling never sees. python-pptx, and so Docling, skips every shape inside mc:AlternateContent, and PowerPoint
@@ -43,6 +45,7 @@ FOOTER_PLACEHOLDERS = {"ftr": "footer", "sldNum": "slide number", "dt": "date"}
 TITLE_PLACEHOLDERS = {"title", "ctrTitle"}
 BOOKKEEPING = {"nvGrpSpPr", "grpSpPr", "extLst"}         # children of a group that are not shapes
 WORDS = re.compile(r"\w+")
+MONOSPACE = re.compile(r"(?i)mono|courier|consolas|menlo|monaco|lucida console|code")   # Roboto Mono, Fira Code
 
 
 def _q(name: str) -> str:
@@ -74,6 +77,8 @@ class Shape:
     picture_fill: bool = False                  # a shape filled with a picture
     top: float | None = None                    # top edge / slide height; None inside a group (own coordinates)
     size: float = 0.0                           # largest font size of its text, in points (0: no text)
+    emu: tuple[int, int, int, int] | None = None    # left, top, width, height, as python-pptx and Docling read them
+    monospace: bool = False                     # most of its text is in a fixed-width font
 
     @property
     def lines(self) -> list[str]:
@@ -107,10 +112,12 @@ def read_deck(path: Path) -> Deck:
     slides = []
     for number, slide in enumerate(presentation.slides, start=1):
         facts = Slide(number, hidden=slide._element.get("show") in ("0", "false"))
+        boxes = _boxes(slide.shapes)
         for element, hidden_from_docling, top_level in _walk(slide.shapes._spTree):
             shape = _shape(number, element, hidden_from_docling)
             shape = replace(shape, top=_top(element, height) if top_level else None,
-                            size=font_size(element, defaults))
+                            size=font_size(element, defaults), emu=boxes.get(_shape_id(element)),
+                            monospace=monospace(element))
             facts.shapes.append(shape)
             if shape.kind == "smartart":
                 facts.smartart.append(_smartart_lines(slide.part, element))
@@ -166,6 +173,48 @@ def _shape(slide: int, element: Any, hidden_from_docling: bool) -> Shape:
                      hidden_from_docling=hidden_from_docling)
     kind = {"pic": "picture", "cxnSp": "connector", "contentPart": "ink"}.get(name, "unknown")
     return Shape(slide, f"{prefix}{name}", kind, hidden_from_docling=hidden_from_docling)
+
+
+def _boxes(shapes: Any) -> dict[str, tuple[int, int, int, int]]:
+    """Each shape's box by its id on the slide, as python-pptx reads it: a placeholder's comes from its layout."""
+    found: dict[str, tuple[int, int, int, int]] = {}
+    for shape in shapes:
+        if getattr(shape, "shape_type", None) == 6:                     # a group: its shapes, not the group
+            found.update(_boxes(shape.shapes))
+        if None not in (shape.left, shape.top, shape.width, shape.height):
+            found[str(shape.shape_id)] = (int(shape.left), int(shape.top), int(shape.width), int(shape.height))
+    return found
+
+
+def _shape_id(element: Any) -> str | None:
+    own = next((child for child in element if _local(child).startswith("nv")), None)
+    names = own.find(_q("p:cNvPr")) if own is not None else None
+    return names.get("id") if names is not None else None
+
+
+def monospace(element: Any) -> bool:
+    """Whether most of the shape's text runs are set in a fixed-width font: the run's own typeface, else its
+    paragraph's default (deck A keeps it there), else the shape's list style for that level."""
+    body = element.find(_q("p:txBody"))
+    if body is None:
+        return False
+    style = body.find(_q("a:lstStyle"))
+    faces: list[str] = []
+    for p in body.iterfind(_q("a:p")):
+        props = p.find(_q("a:pPr"))
+        level = int(props.get("lvl", "0")) + 1 if props is not None else 1
+        paragraph = _face(props.find(_q("a:defRPr")) if props is not None else None)
+        listed = _face(style.find(f"{_q(f'a:lvl{level}pPr')}/{_q('a:defRPr')}")) if style is not None else None
+        for run in p.iterfind(_q("a:r")):
+            if (run.findtext(_q("a:t")) or "").strip():
+                faces.append(_face(run.find(_q("a:rPr"))) or paragraph or listed or "")
+    mono = sum(1 for face in faces if MONOSPACE.search(face))
+    return bool(faces) and 2 * mono >= len(faces)
+
+
+def _face(props: Any) -> str | None:
+    latin = props.find(_q("a:latin")) if props is not None else None
+    return latin.get("typeface") if latin is not None else None
 
 
 def _top(element: Any, height: int) -> float | None:
@@ -350,8 +399,11 @@ class Entry:
 def audit(deck: Deck, blocks: list, dropped: list[str], title: str) -> list[Entry]:
     """Put every shape (and each slide's notes) in exactly one bucket by comparing its text with the blocks."""
     text_on: dict[int, list[str]] = defaultdict(list)
+    cells: dict[int, set[str]] = defaultdict(set)              # numbers that came back as a row of cells
     for b in blocks:
-        text_on[b.loc.slide].append(norm(b.text))
+        text_on[b.loc.slide] += [norm(b.text), *(norm(h) for h in b.heading_path[1:])]   # a label in the path
+        if b.extra.get("origin") == "number cells":
+            cells[b.loc.slide].update(b.text.split())
     dropped_lines = {norm(t) for t in dropped}
     charts = Counter(b.loc.slide for b in blocks if b.kind == "table" and b.figure_id)   # a chart's data table
     smartart = Counter(b.loc.slide for b in blocks if b.extra.get("origin") == "smartart")
@@ -365,7 +417,7 @@ def audit(deck: Deck, blocks: list, dropped: list[str], title: str) -> list[Entr
             elif shape.kind == "smartart":
                 bucket = "extracted" if smartart[slide.number] >= seen["smartart"] else "skipped:smartart"
             else:
-                bucket = _bucket(shape, here, dropped_lines, title)
+                bucket = _bucket(shape, here, dropped_lines, title, cells[slide.number])
             entries.append(Entry(slide.number, shape.tag, bucket))
         if slide.notes:
             wanted = [n for n in map(norm, slide.notes) if n]
@@ -381,7 +433,7 @@ def _found(line: str, blocks_here: list[str]) -> bool:
     return any(line in block for block in blocks_here)
 
 
-def _bucket(shape: Shape, here: list[str], dropped: set[str], title: str) -> str:
+def _bucket(shape: Shape, here: list[str], dropped: set[str], title: str, cells: set[str]) -> str:
     if shape.kind in SKIPPED_KINDS:
         return f"skipped:{SKIPPED_KINDS[shape.kind]}"
     if shape.kind not in ("text", "table"):
@@ -391,8 +443,8 @@ def _bucket(shape: Shape, here: list[str], dropped: set[str], title: str) -> str
     if not shape.lines:
         return "skipped:picture fill" if shape.picture_fill else "skipped:empty"
     wanted = [n for n in map(norm, shape.lines) if n]
-    if not wanted:
-        return "skipped:no words"                        # only digits or symbols, as clean_text() drops them
+    if not wanted:                                       # only digits or symbols, as clean_text() drops them
+        return "extracted" if all(line.strip() in cells for line in shape.lines) else "skipped:no words"
     missing = [n for n in wanted if not _found(n, here)]
     if not missing:
         return "extracted"

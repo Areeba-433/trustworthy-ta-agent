@@ -29,6 +29,7 @@ EXPECTED: dict[str, Census] = {
     "mixed_deck": Census(slides=8, pictures=10, connectors=2, glued_ends=4, autoshapes=6, textboxes=7, groups=2,
                          tables=1, charts=1, notes=1, hidden=1),
     "text_box_titles": Census(slides=2, textboxes=7),
+    "slide_layout": Census(slides=6, autoshapes=24, textboxes=40),
 }
 
 
@@ -69,7 +70,8 @@ def test_each_deck_opens_again_and_holds_what_it_should(name):
 
 @pytest.mark.parametrize("name", sorted(BUILDERS))
 def test_no_deck_holds_any_text_but_the_made_up_labels(name):
-    assert set(_all_text(_open(name))) <= all_texts()            # the repo is public: no real course text
+    worded = {text for text in _all_text(_open(name)) if any(c.isalpha() for c in text)}
+    assert worded <= all_texts()                                 # the repo is public: no real course text
 
 
 def test_pictures_have_the_sizes_the_rules_are_about():

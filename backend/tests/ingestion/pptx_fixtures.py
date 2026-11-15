@@ -58,16 +58,39 @@ TEXTS = {                     # every string any deck contains; tests check none
     "box_titles": {"first": "Fixture text box title", "body": "Body sentence under the text box title",
                    "symbol": "\u2605", "kicker": "FIXTURE KICKER LABEL", "second": "Second fixture slide title",
                    "formula": "Fixture formula line", "body2": "Second body sentence for the fixture"},
+    "layout": {
+        "sections": ["FIXTURE SECTION ONE", "FIXTURE SECTION TWO"],
+        "titles": ["Fixture cells slide", "Fixture columns slide", "Fixture cards slide", "Fixture code slide",
+                   "Fixture map slide", "Fixture boards slide"],
+        "footers": ["Fixture course footer | Part alpha", "Fixture course footer | Part beta",
+                    "Fixture course footer | Part gamma"],
+        "counters": ["1 / 6", "2 / 6", "3 / 6", "4 / 6", "5 / 6", "6 / 6"],
+        "row_label": "Fixture input row", "cells": ["41", "17", "58", "6", "23", "90"],
+        "under": "Fixture sentence under the cells",
+        "halves": ["Fixture left half", "Fixture right half"],
+        "pairs": ["[41, 17]", "[58, 6]", "[23, 90]", "[3, 12]"],
+        "columns_note": "Fixture sentence under the columns",
+        "cases": ["Fixture case one", "Fixture case two", "Fixture case three"],
+        "values": ["Fixture value one", "Fixture value two", "Fixture value three"],
+        "code": ["FIXTURE_PROC(a, b):", "    if a > b:", "        return a", "", "    return b"],
+        "mono": "fixture_call(41, 17)",
+        "nodes": ["Fixture node A", "Fixture node B", "Fixture node C"], "node_numbers": ["77", "35", "120"],
+        "panel": ["FIXTURE STEP ONE", "Fixture panel sentence one", "Fixture panel sentence two"],
+        "boards": ["Fixture board one", "Fixture board two"],
+        "tiles": [["11", "12", "13", "14"], ["21", "22", "23", "24"]],
+    },
 }
 
 
 def all_texts() -> set[str]:
-    """Every string written into any fixture deck, flattened."""
+    """Every worded string written into any fixture deck, flattened. Numbers alone ("41", "2 / 6") and empty lines
+    are left out: they say nothing about a course, and the numeric summaries print digits of their own."""
     found: set[str] = set()
 
     def walk(value: object) -> None:
         if isinstance(value, str):
-            found.add(value)
+            if any(c.isalpha() for c in value):
+                found.add(value)
         elif isinstance(value, dict):
             for item in value.values():
                 walk(item)
@@ -262,6 +285,73 @@ def add_text_box_titles(deck: Deck) -> list[Slide]:
     return [first, second]
 
 
+def _text_at(slide: Slide, lines: str | list[str], left: float, top: float, width: float, height: float,
+             points: int, font: str | None = None) -> None:
+    """A text box at an exact place, one paragraph per line, each run at `points` (and in `font` if given)."""
+    frame = slide.shapes.add_textbox(Inches(left), Inches(top), Inches(width), Inches(height)).text_frame
+    for i, line in enumerate([lines] if isinstance(lines, str) else lines):
+        paragraph = frame.paragraphs[0] if i == 0 else frame.add_paragraph()
+        paragraph.text = line
+        for run in paragraph.runs:
+            run.font.size = Pt(points)
+            if font is not None:
+                run.font.name = font
+
+
+def _cell(slide: Slide, text: str, left: float, top: float, width: float, height: float) -> None:
+    """A rounded box holding one short text, as slides draw array cells, cards and board squares."""
+    shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(left), Inches(top), Inches(width),
+                                   Inches(height))
+    shape.text_frame.text = text
+    shape.text_frame.paragraphs[0].runs[0].font.size = Pt(16)
+
+
+def add_slide_layout(deck: Deck) -> list[Slide]:
+    """Six slides whose meaning depends on where things stand (blank layout, 28 pt titles in text boxes).
+
+    Every slide has a footer whose last words change by section, at the same place, and a slide counter. Slides 1-2
+    and 3-4 have a section label above the title. 1: a label over a row of number cells, a sentence under them.
+    2: two halves, each a label over two boxes. 3: three cards, a case over its value. 4: pseudocode indented with
+    spaces, no fixed-width font, and one line in Courier New. 5: a map of labelled nodes with numbers beside them,
+    and a step panel to its right. 6: two boards of number squares side by side, each under its label.
+    """
+    texts = TEXTS["layout"]
+    slides = [_slide(deck, "blank") for _ in range(6)]
+    for n, slide in enumerate(slides):
+        if n < 4:
+            _text_at(slide, texts["sections"][n // 2], 0.6, 0.15, 8.5, 0.3, 11)
+        _text_at(slide, texts["titles"][n], 0.6, 0.5, 8.5, 0.7, 28)
+        _text_at(slide, texts["footers"][n // 2], 0.4, 7.0, 6.0, 0.3, 10)
+        _text_at(slide, texts["counters"][n], 9.0, 7.0, 0.7, 0.3, 10)
+    cells, columns, cards, code, chart, boards = slides
+    _text_at(cells, texts["row_label"], 0.6, 1.4, 3.0, 0.4, 16)
+    for i, number in enumerate(texts["cells"]):
+        _cell(cells, number, 0.6 + 1.4 * i, 2.0, 1.1, 0.8)
+    _text_at(cells, texts["under"], 0.6, 3.6, 8.5, 0.6, 16)
+    for side, left in enumerate((0.6, 5.4)):
+        _text_at(columns, texts["halves"][side], left + 0.4, 1.5, 3.0, 0.4, 16)
+        for k in range(2):
+            _cell(columns, texts["pairs"][2 * side + k], left + 2.0 * k, 2.2, 1.8, 0.7)
+    _text_at(columns, texts["columns_note"], 0.8, 4.2, 8.4, 0.8, 16)
+    for i in range(3):
+        _cell(cards, texts["cases"][i], 0.6 + 3.0 * i, 1.6, 2.6, 0.6)
+        _cell(cards, texts["values"][i], 0.6 + 3.0 * i, 2.4, 2.6, 0.9)
+    _text_at(code, texts["code"], 0.6, 1.5, 6.0, 2.4, 14)
+    _text_at(code, texts["mono"], 0.6, 4.2, 6.0, 0.6, 14, font="Courier New")
+    for (left, top), node in zip(((0.4, 1.9), (2.4, 3.0), (1.0, 4.4)), texts["nodes"]):
+        _text_at(chart, node, left, top, 1.8, 0.35, 14)
+    for (left, top, height), number in zip(((2.2, 1.5, 0.4), (0.5, 3.5, 0.3), (3.0, 4.6, 0.4)),
+                                           texts["node_numbers"]):
+        _text_at(chart, number, left, top, 0.5, height, 12)
+    for (top, height), line in zip(((1.5, 0.4), (2.1, 0.9), (3.3, 0.9)), texts["panel"]):
+        _text_at(chart, line, 6.2, top, 3.2, height, 14)
+    for b, left in enumerate((0.8, 4.8)):
+        _text_at(boards, texts["boards"][b], left, 1.4, 3.0, 0.4, 16)
+        for k, number in enumerate(texts["tiles"][b]):
+            _cell(boards, number, left + 0.8 * (k % 2), 2.0 + 0.8 * (k // 2), 0.7, 0.7)
+    return slides
+
+
 def add_logo(slide: Slide) -> Picture:
     """The same small picture in the same corner: template decoration."""
     return _picture(slide, picture_png(LOGO_PX, seed=9), left=8.3, top=0.2, width=1.4)
@@ -346,6 +436,7 @@ BUILDERS: dict[str, Callable[[], Deck]] = {
     "reading_order": _single(add_reading_order),
     "mixed_deck": build_mixed_deck,
     "text_box_titles": _single(add_text_box_titles),
+    "slide_layout": _single(add_slide_layout),
 }
 
 

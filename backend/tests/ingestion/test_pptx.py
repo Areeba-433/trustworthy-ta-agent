@@ -429,9 +429,7 @@ def test_real_docling_gives_these_blocks_in_reading_order(lecture):
         ("heading", "Hidden extra", 9),
         ("list_item", "- Only shown on request", 9),
         ("heading", "Code", 10),
-        ("paragraph", "// sum an array", 10),
-        ("paragraph", "for (int i = 0; i < n; i++)", 10),
-        ("paragraph", "sum += a[i];", 10),
+        ("code", "// sum an array\nfor (int i = 0; i < n; i++)\n    sum += a[i];", 10),
         ("figure", "[Figure]", 11),
     ]
     assert _table_cells(table) == [["Operation", "Cost"], ["push", "O(1)"], ["search", "O(n)"]]
@@ -497,8 +495,11 @@ def test_figure_words_stay_paragraphs_and_chart_data_becomes_a_table(lecture):
     assert _table_cells(chart.text) == [["", "calls per test"], ["push calls", "3"], ["pop calls", "1"]]
 
 
-def test_code_lines_stay_in_order_but_lose_their_indent(lecture):
-    assert _on(lecture, 10)[1:] == ["// sum an array", "for (int i = 0; i < n; i++)", "sum += a[i];"]
+def test_code_in_a_fixed_width_font_is_one_code_block_with_its_lines_and_indent(lecture):
+    [code] = [b for b in lecture.blocks if b.loc.slide == 10 and b.kind != "heading"]
+    assert (code.kind, code.lang, code.text.splitlines()) == (
+        "code", "code", ["// sum an array", "for (int i = 0; i < n; i++)", "    sum += a[i];"])
+    assert (code.extra["lines_from"], len(code.extra["merged_from"])) == ("pptx_text", 3)   # three paragraphs
 
 
 def test_a_picture_only_slide_is_named_in_the_warnings(lecture):
@@ -523,7 +524,10 @@ def test_loading_twice_gives_identical_output_even_from_the_cache(lecture, lectu
 
     meta = _meta_for(lecture_file)
     assert cache_file(meta.file_sha256, "pptx").exists()         # the second load really reads the cache
-    assert load(lecture_file, meta).model_dump_json() == lecture.model_dump_json()
+    again = load(lecture_file, meta)
+    timings = {"quality": {"seconds_taken"}}                      # each step's seconds differ from run to run
+    assert again.model_dump_json(exclude=timings) == lecture.model_dump_json(exclude=timings)
+    assert "docling_cache" in again.quality.seconds_taken and "docling" not in again.quality.seconds_taken
 
 
 # ================================================================ part 3: broken files through ingest_file()
