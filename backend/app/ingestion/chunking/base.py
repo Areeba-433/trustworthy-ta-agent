@@ -16,6 +16,7 @@ class Draft:
     loc: Location
     kinds: list[BlockKind] = field(default_factory=list)
     block_seqs: list[int] = field(default_factory=list)
+    figure_ids: list[str] = field(default_factory=list)      # the blocks' names, "fig7"; finish() adds the resource
 
 
 def merge_locations(locs: list[Location]) -> Location:
@@ -40,10 +41,15 @@ def merge_locations(locs: list[Location]) -> Location:
 
 def finish(doc: ParsedDocument, drafts: list[Draft], chunker: str,
            count: TokenCounter = count_tokens) -> ChunkedDocument:
-    """Number the drafts 0, 1, 2 ..., give each its chunk_id and token count, and validate the whole result."""
+    """Number the drafts 0, 1, 2 ..., give each its chunk_id and token count, and validate the whole result.
+
+    A figure's name in a file ("fig7") becomes its id across the system ("<resource_id>:fig7") here, so loaders and
+    chunkers never need the resource id.
+    """
     chunks = [
         Chunk(seq=i, chunk_id=f"{doc.resource_id}:{i}", text=d.text, heading_path=d.heading_path, loc=d.loc,
-              kinds=d.kinds, block_seqs=d.block_seqs, token_count=count(d.text))
+              kinds=d.kinds, block_seqs=d.block_seqs, token_count=count(d.text),
+              figure_ids=[f"{doc.resource_id}:{name}" for name in dict.fromkeys(d.figure_ids)])
         for i, d in enumerate(drafts)
     ]
     return ChunkedDocument(resource_id=doc.resource_id, course_id=doc.course_id, source_type=doc.source_type,

@@ -6,6 +6,7 @@
    a chunk: one that does not fit starts the next chunk.
 4. A last chunk under `minimum` tokens joins the chunk before it in the same section, if the two fit the limit.
 Headings add no text: the heading path already travels with every chunk and is embedded with it.
+Every chunk lists the figures of its blocks (figure_ids), so a figure is never lost between blocks and chunks.
 """
 from collections.abc import Callable, Hashable, Iterator
 
@@ -87,6 +88,7 @@ def _draft(pieces: list[tuple[Block, str]]) -> Draft:
         loc=merge_locations([b.loc for b in blocks]),
         kinds=list(dict.fromkeys(b.kind for b in blocks)),        # in order, without repeats
         block_seqs=list(dict.fromkeys(b.seq for b in blocks)),
+        figure_ids=list(dict.fromkeys(b.figure_id for b in blocks if b.figure_id)),
     )
 
 
@@ -99,4 +101,5 @@ def _join_small_tail(drafts: list[Draft], minimum: int, count: TokenCounter) -> 
         drafts[-2:] = [Draft(text=text, heading_path=before.heading_path,
                              loc=merge_locations([before.loc, tail.loc]),
                              kinds=list(dict.fromkeys(before.kinds + tail.kinds)),
-                             block_seqs=list(dict.fromkeys(before.block_seqs + tail.block_seqs)))]
+                             block_seqs=list(dict.fromkeys(before.block_seqs + tail.block_seqs)),
+                             figure_ids=list(dict.fromkeys(before.figure_ids + tail.figure_ids)))]
