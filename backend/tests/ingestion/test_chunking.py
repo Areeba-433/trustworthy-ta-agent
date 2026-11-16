@@ -163,7 +163,7 @@ def test_the_pdf_chunker_joins_introductions(word_tokens):
     from app.ingestion.chunking.chunkers import pdf
     chunked = pdf.chunk(_doc({"text": "About the chapter.", "path": ["Inheritance"]},
                              {"text": _text(100), "path": ["Inheritance", "Base Class"]}))
-    assert chunked.chunker == "pdf-sections/2"
+    assert chunked.chunker == "pdf-sections/3"
     assert [(c.block_seqs, c.heading_path) for c in chunked.chunks] == [([0, 1], [T, "Inheritance", "Base Class"])]
 
 
@@ -287,3 +287,115 @@ def test_a_small_last_chunk_brings_its_figures_when_it_joins():
 def test_finish_names_each_figure_with_the_resource_id():
     doc = _doc({"kind": "figure", "text": "[Figure]", "figure_id": "fig3"})
     assert finish(doc, _chunk(doc), "test/1", count=words).chunks[0].figure_ids == ["r1:fig3"]
+
+
+# ================================================================ share_figures: a figure and the text under it (PDF)
+
+def _screenshot_then_text(**pages: int) -> ParsedDocument:
+    """A paragraph, a screenshot at the end of its chunk, and the long paragraph under it that explains it (the
+    Binary Analysis assignment, page 12): 300 + [Figure] fits a chunk of 384, the 200 words after it do not."""
+    return _doc({"text": _text(300), "path": ["Task 2"], "loc": {"page": pages.get("before", 12)}},
+                {"kind": "figure", "text": "[Figure]", "path": ["Task 2"], "figure_id": "fig14",
+                 "loc": {"page": pages.get("figure", 12)}},
+                {"text": "This screenshot demonstrates " + _text(197), "path": ["Task 2"],
+                 "loc": {"page": pages.get("after", 12)}})
+
+
+def test_a_figure_that_ends_a_chunk_also_starts_the_next_chunk_on_its_page():
+    drafts = _chunk(_screenshot_then_text(), share_figures=True)
+    assert [(d.block_seqs, d.figure_ids) for d in drafts] == [([0, 1], ["fig14"]), ([1, 2], ["fig14"])]
+    assert drafts[1].text.startswith("[Figure]\n\nThis screenshot demonstrates")
+    assert drafts[1].kinds == ["figure", "paragraph"] and drafts[1].loc.page == 12
+
+
+def test_without_share_figures_a_figure_stays_in_one_chunk():
+    assert [d.block_seqs for d in _chunk(_screenshot_then_text())] == [[0, 1], [2]]
+
+
+def test_a_figure_is_not_shared_with_a_chunk_that_starts_on_another_page():
+    """Binary Analysis page 5: the screenshot under "I disassembled ..." belongs above; the next chunk is page 6."""
+    drafts = _chunk(_screenshot_then_text(before=5, figure=5, after=6), share_figures=True)
+    assert [d.block_seqs for d in drafts] == [[0, 1], [2]]
+
+
+def test_a_figure_is_not_shared_when_the_next_chunk_would_pass_the_limit():
+    doc = _doc({"text": _text(300)}, {"kind": "figure", "text": "[Figure]", "figure_id": "fig1"},
+               {"text": _text(512)})
+    assert [d.block_seqs for d in _chunk(doc, share_figures=True)] == [[0, 1], [2]]   # 1 + 512 would pass 512
+
+
+def test_a_figure_is_never_shared_with_the_next_section():
+    doc = _doc({"text": _text(300), "path": ["Task 1"]},
+               {"kind": "figure", "text": "[Figure]", "path": ["Task 1"], "figure_id": "fig3"},
+               {"kind": "heading", "text": "Task 2", "path": ["Task 2"]},
+               {"text": _text(50), "path": ["Task 2"]})
+    assert [d.block_seqs for d in _chunk(doc, share_figures=True)] == [[0, 1], [3]]
+
+
+def test_a_book_figure_is_shared_with_its_words_and_caption():
+    """OOP book page 84: FIGURE 2.x ends a chunk; "These conversions take place invisibly ..." starts the next."""
+    doc = _doc({"text": _text(300)},
+               {"kind": "figure_text", "text": "int float double", "figure_id": "fig17"},
+               {"kind": "caption", "text": "FIGURE 2.6 Data conversion.", "figure_id": "fig17"},
+               {"text": "These conversions take place invisibly " + _text(150)})
+    drafts = _chunk(doc, share_figures=True)
+    assert [d.block_seqs for d in drafts] == [[0, 1, 2], [1, 2, 3]]
+    assert drafts[1].text.startswith("int float double\n\nFIGURE 2.6 Data conversion.\n\nThese conversions")
+
+
+def test_a_chunk_that_is_only_a_figure_is_not_copied_into_the_next_chunk():
+    """Pointers slide 39: seven rows of numbers inside a picture fill a chunk of their own; the table after them is
+    on the same page. That chunk already is the figure's: copying it would only repeat the rows."""
+    doc = _doc({"kind": "figure_text", "text": _text(70, "37"), "figure_id": "fig6", "loc": {"page": 39}},
+               {"kind": "table", "text": _text(340, "|"), "loc": {"page": 39}})
+    assert [d.block_seqs for d in _chunk(doc, share_figures=True)] == [[0], [1]]
+
+
+def test_a_figure_whose_words_go_on_in_the_next_chunk_is_not_shared_again():
+    doc = _doc({"kind": "figure_text", "text": _text(30, "head"), "figure_id": "fig1"},
+               {"kind": "caption", "text": _text(30, "list"), "figure_id": "fig1"})
+    assert [d.block_seqs for d in _chunk(doc, target=40, minimum=1, share_figures=True)] == [[0], [1]]
+
+
+# ================================================================ name_pieces: which listing a piece is from (PDF)
+
+def _listing(first_line: str, lines: int = 120) -> str:
+    return "\n".join([first_line] + [f"   total = total + values[{i}] * weight;" for i in range(lines)])
+
+
+def test_later_pieces_of_a_cut_listing_say_which_listing_they_are():
+    """OOP book chunk 808: a piece from the middle of HORSE began with "time_t aTime;" and named no program."""
+    listing = _listing("// horse.cpp")
+    drafts = _chunk(_doc({"kind": "code", "text": listing, "path": ["Horse Race"]}), name_pieces=True)
+    assert len(drafts) > 1 and drafts[0].text.startswith("// horse.cpp\n")
+    assert all(d.text.startswith("// horse.cpp (continued)\n") for d in drafts[1:])
+    assert all(words(d.text) <= 384 + 4 for d in drafts)
+    pieces = [drafts[0].text] + [d.text.split("\n", 1)[1] for d in drafts[1:]]
+    assert "\n".join(pieces) == listing                            # the listing itself is unchanged
+
+
+@pytest.mark.parametrize("first, label", [("# plot.py", "# plot.py (continued)"),
+                                          ("/* sort.c */", "/* sort.c (continued) */"),
+                                          ("-- report.sql", "-- report.sql (continued)")])
+def test_the_line_keeps_the_listing_s_own_comment_style(first, label):
+    drafts = _chunk(_doc({"kind": "code", "text": _listing(first)}), name_pieces=True)
+    assert drafts[1].text.split("\n", 1)[0] == label
+
+
+def test_a_cut_listing_whose_first_line_names_no_file_gets_no_line():
+    drafts = _chunk(_doc({"kind": "code", "text": _listing("int main()")}), name_pieces=True)
+    assert len(drafts) > 1 and not any("(continued)" in d.text for d in drafts)
+
+
+def test_only_code_gets_the_line_and_only_when_asked():
+    paragraph = " ".join(f"// see file{i}.cpp for step {i} of the insertion." for i in range(70))
+    assert not any("(continued)" in d.text for d in _chunk(_doc({"text": paragraph}), name_pieces=True))
+    assert not any("(continued)" in d.text for d in _chunk(_doc({"kind": "code", "text": _listing("// a.cpp")})))
+
+
+def test_the_pdf_chunker_shares_figures_and_names_pieces(word_tokens):
+    from app.ingestion.chunking.chunkers import pdf
+    chunked = pdf.chunk(_screenshot_then_text())
+    assert [c.figure_ids for c in chunked.chunks] == [["r1:fig14"], ["r1:fig14"]]
+    chunked = pdf.chunk(_doc({"kind": "code", "text": _listing("// horse.cpp")}))
+    assert chunked.chunks[1].text.startswith("// horse.cpp (continued)\n")
