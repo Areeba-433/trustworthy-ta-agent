@@ -15,13 +15,27 @@ as_slides() keeps one heading per slide, its title, so a slide is one section:
 
 A PDF is slides when every page is wider than tall: PowerPoint, Google Slides and Canva export that way; books, notes
 and assignments are taller than wide.
+
+keep_line_breaks() gives a slide's lines back. A slide lists short points one per line, often without bullets, and
+Docling makes one paragraph of a text box: DSA slide 3 read "Implementation of 20 DSA problems Individual testing
+and dry runs Integration into a single menu-driven system", three points as one sentence. The PDF still has the
+lines. Between two of them the text gets a line break, unless the second line only goes on with the first: it
+starts with a small letter ("system", "concepts") and its first word would not have fitted at the end of the line
+before, so PowerPoint moved it down. A word broken with a hyphen goes on too. Only paragraphs change, and only when
+the PDF's lines in the paragraph's box have exactly Docling's letters (spaces and dashes aside); a line of another
+item inside the box is left out (DSA slide 7: Docling made an item of "Min Stack — O(1) minimum retrieval", inside
+the box of the three points around it). The words stay Docling's: only spaces become line breaks.
 """
 import logging
 from collections.abc import Sequence
+from pathlib import Path
 
-from docling_core.types.doc import DoclingDocument
+import pypdfium2 as pdfium
+from docling_core.types.doc import DocItem, DoclingDocument
 
 from app.ingestion.contract import Block
+from app.ingestion.pdf_code import (_WORD_GAP, _ascii, _boxes, _Char, _inside, _lines, _Page, _page, _width,
+                                    _words)
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +67,85 @@ def as_slides(blocks: Sequence[Block], doc: DoclingDocument) -> list[Block]:
     logger.info("slides: %d headings kept of %d", sum(b.kind == "heading" for b in out),
                 sum(b.kind == "heading" for b in blocks))
     return [block.model_copy(update={"seq": n}) for n, block in enumerate(out)]
+
+
+_SPACE = 0.5      # columns: the width of a space, in the line's usual letter width
+_MARGIN = 1.0     # points: a word that ends this little past the widest line still fits
+
+
+def keep_line_breaks(blocks: Sequence[Block], doc: DoclingDocument, path: Path) -> list[Block]:
+    """The blocks of a PDF of slides, each paragraph with the line breaks between its points; how many breaks were
+    given back is in the block's extra["line_breaks"]. Other PDFs' blocks come back unchanged."""
+    if not is_slides(doc) or not any(b.kind == "paragraph" for b in blocks):
+        return list(blocks)
+    items = {item.self_ref: item for item in doc.texts}
+    pages: dict[int, _Page | None] = {}
+    pdf = pdfium.PdfDocument(str(path))
+    try:
+        out = [_with_breaks(b, items.get(b.extra.get("ref")), pdf, pages) if b.kind == "paragraph" else b
+               for b in blocks]
+    finally:
+        pdf.close()
+    logger.info("slides: line breaks given back to %d paragraphs", sum(a is not b for a, b in zip(out, blocks)))
+    return out
+
+
+def _with_breaks(block: Block, item: DocItem | None, pdf: pdfium.PdfDocument, pages: dict[int, _Page | None]) -> Block:
+    text = block.text
+    if item is None or len(item.prov) != 1 or " " not in text.strip():
+        return block
+    page = _page(pdf, pages, item.prov[0].page_no, None)
+    if page is None:
+        return block
+    wanted = _squash(text)
+    for box in _boxes(item.prov[0].bbox, page):
+        chars = [c for c in page.chars if _inside(c, box)]
+        lines, ends, at = [], [], 0          # the PDF's lines that give Docling's text, and where each one ends in it
+        for line in _lines(chars):
+            own = _squash("".join(c.text for c in line))
+            if own and wanted.startswith(own, at):           # a line of another item inside the box is skipped
+                at += len(own)
+                lines.append(line)
+                ends.append(at)
+        if at != len(wanted) or len(lines) < 2:
+            continue
+        width, widest = _width(chars), max(line[-1].right for line in lines)
+        breaks = {end for end, line, below in zip(ends, lines, lines[1:]) if _breaks(line, below, widest, width)}
+        out, count = list(text), 0
+        for n, ch in enumerate(text):
+            if not ch.isspace():
+                count += len(_squash(ch))
+            elif count in breaks:            # the space between the two lines (a word broken in two has none)
+                out[n] = "\n"
+                breaks.discard(count)
+        new = "".join(out)
+        if new == text:
+            return block
+        return block.model_copy(update={"text": new, "extra": {**block.extra, "line_breaks": new.count("\n")}})
+    return block
+
+
+def _squash(text: str) -> str:
+    """The letters, digits and signs of a text, to compare Docling's text with the PDF's: no spaces, no dashes
+    (Docling read "only – O(n)" as "only -O(n)"; pdfium marks a word broken with a hyphen with U+FFFE)."""
+    return "".join(ch for ch in _ascii(text).replace("\u2212", "-") if not ch.isspace() and ch not in "-\ufffe")
+
+
+def _breaks(line: list[_Char], below: list[_Char], widest: float, width: float) -> bool:
+    """True when the line below starts a new point: its first word would have fitted on `line`, or it starts with
+    anything but a small letter. False when it goes on with `line`: a word broken at the line's end (pdfium marks
+    the break with U+FFFE), or a small letter that PowerPoint moved down because the word did not fit."""
+    ends, starts = _words(line, width)[-1:], _words(below, width)[:1]
+    if ends and ends[0].endswith("\ufffe"):
+        return False
+    if not starts or not starts[0][:1].islower():
+        return True
+    end = below[0].right                                 # where the first word of the line below ends
+    for previous, c in zip(below, below[1:]):
+        if c.spaced or c.left - previous.right > width * _WORD_GAP:
+            break
+        end = c.right
+    return line[-1].right + _SPACE * width + (end - below[0].left) <= widest + _MARGIN
 
 
 def _pages(blocks: Sequence[Block]) -> list[list[Block]]:

@@ -8,7 +8,8 @@ headings, set_heading_levels() puts each heading under the bigger ones by its si
 chapter's heading after the PDF's bookmark ("Chapter 9: Inheritance"). Then to_blocks() makes blocks,
 restore_code_lines() gives code listings their lines back and tells code from sentences by font, mark_exponents()
 keeps the exponent of a power of ten ("10^308"), order_by_position() puts what stands higher on a page first,
-as_slides() keeps one heading per slide when the PDF is slides (every page wider than tall), join_page_listings()
+as_slides() keeps one heading per slide when the PDF is slides (every page wider than tall) and keep_line_breaks()
+gives a slide's paragraphs their lines back ("Scope" points, one per line), join_page_listings()
 makes one block of a listing that a page break cut in two (not in slides: each slide's code is its own), and
 mark_figures() notes where each figure is, so an answer can show it."""
 from pathlib import Path
@@ -26,7 +27,7 @@ from app.ingestion.pdf_furniture import remove_chapter_tabs, remove_contents_and
 from app.ingestion.pdf_headings import split_long_headings
 from app.ingestion.pdf_images import add_missed_pictures
 from app.ingestion.pdf_order import order_by_position
-from app.ingestion.pdf_slides import as_slides, is_slides
+from app.ingestion.pdf_slides import as_slides, is_slides, keep_line_breaks
 from app.ingestion.pdf_structure import join_page_listings, list_headings, name_chapters, set_heading_levels
 from app.ingestion.precheck import UNREADABLE_SHARE_MAX
 from app.ingestion.registry import register
@@ -69,6 +70,8 @@ def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
         blocks = order_by_position(blocks, conversion.document)
     with timer("slides"):
         blocks = as_slides(blocks, conversion.document)
+    with timer("line_breaks"):
+        blocks = keep_line_breaks(blocks, conversion.document, path)
     with timer("page_listings"):
         if not is_slides(conversion.document):            # a slide's code is its own: no page break cut it
             blocks = join_page_listings(blocks)

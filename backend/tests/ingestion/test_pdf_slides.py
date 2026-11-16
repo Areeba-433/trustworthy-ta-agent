@@ -7,7 +7,7 @@ from app.ingestion.converter import Conversion
 from app.ingestion.dispatcher import ingest_file
 from app.ingestion.docling_blocks import to_blocks
 from app.ingestion.loaders import pdf
-from app.ingestion.pdf_slides import as_slides, is_slides
+from app.ingestion.pdf_slides import as_slides, is_slides, keep_line_breaks
 from conftest import write_pdf
 
 T = "Deck"
@@ -130,6 +130,7 @@ def test_the_pdf_loader_makes_one_section_of_a_slide(tmp_path, monkeypatch, data
                                                          ("paragraph", "Advantages:"),
                                                          ("paragraph", "Fast access using indexes")]
     assert "slides" in parsed.quality.seconds_taken
+    assert "line_breaks" in parsed.quality.seconds_taken
 
 
 def test_code_on_two_slides_under_one_title_stays_two_listings(tmp_path, monkeypatch, data_dir):
@@ -147,3 +148,70 @@ def test_code_on_two_slides_under_one_title_stays_two_listings(tmp_path, monkeyp
     parsed = ingest_file(path, "r1", "c1")
     assert [(b.kind, b.text, b.loc.page) for b in parsed.blocks] == [
         ("heading", "Sorting", 1), ("code", "void order();", 1), ("code", "int main();", 2)]
+
+
+# ======================================================================== a slide's lines
+
+def _escaped(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def _slide(tmp_path, lines: list[str], docling_text: str, width: float = 960, height: float = 540):
+    """A one-page PDF with `lines` at the left, 17 points apart, and Docling's paragraph for them: one item, its text
+    `docling_text`, its box around all the lines."""
+    content = "\n".join(f"BT /F1 14 Tf 50 {400 - 17 * n} Td ({_escaped(line)}) Tj ET" for n, line in enumerate(lines))
+    path = write_pdf(tmp_path / "deck.pdf", [content], mediabox=(0, 0, width, height))
+    doc = _doc(1, width, height)
+    bottom = 400 - 17 * (len(lines) - 1) - 4
+    doc.add_text(DocItemLabel.TEXT, docling_text, prov=ProvenanceItem(page_no=1, bbox=_box(48, bottom, 700, 416),
+                                                                      charspan=(0, len(docling_text))))
+    return path, doc
+
+
+def _lines_of(tmp_path, lines: list[str], docling_text: str | None = None, **page) -> Block:
+    path, doc = _slide(tmp_path, lines, docling_text or " ".join(lines), **page)
+    blocks = keep_line_breaks(to_blocks(doc, "pdf", T), doc, path)
+    assert len(blocks) == 1
+    return blocks[0]
+
+
+def test_a_slide_paragraph_gets_its_lines_back_and_a_word_moved_down_goes_on(tmp_path):
+    """DSA slide 3: Docling read three points as one sentence. "system" starts with a small letter and did not fit
+    at the end of the line above: PowerPoint moved it down, it is no point of its own."""
+    block = _lines_of(tmp_path, ["Implementation of 20 DSA problems", "Individual testing and dry runs",
+                                               "Integration into a single menu-driven", "system"])
+    assert block.text == ("Implementation of 20 DSA problems\nIndividual testing and dry runs\n"
+                          "Integration into a single menu-driven system")
+    assert block.extra["line_breaks"] == 2
+
+
+def test_a_small_letter_that_would_have_fitted_above_starts_a_line_of_its_own(tmp_path):
+    """"k" would have fitted after "Input: 10 20" (the line above is far shorter than the widest): a new line."""
+    block = _lines_of(tmp_path, ["Output: 30 40 50 60 70 10 20", "Input: 10 20", "k = 5"])
+    assert block.text == "Output: 30 40 50 60 70 10 20\nInput: 10 20\nk = 5"
+
+
+def test_docling_s_dash_without_its_space_still_matches_the_pdf_s_dash(tmp_path):
+    """DSA slide 10: the PDF has "Insertion – O(log n)", Docling "Insertion -O(log n)". Docling's words stay."""
+    block = _lines_of(tmp_path, ["Insertion \u2013 O(log n)", "Deletion \u2013 O(log n)"],
+                      "Insertion -O(log n) Deletion -O(log n)")
+    assert block.text == "Insertion -O(log n)\nDeletion -O(log n)"
+
+
+def test_a_line_of_another_item_inside_the_box_is_left_out(tmp_path):
+    """DSA slide 7: Docling made an item of the third line, inside the box of the three points around it."""
+    block = _lines_of(tmp_path, ["Sort Stack using Recursion", "Bracket Balance Checker",
+                                 "Min Stack \u2013 O(1) minimum retrieval", "Stack using Queues"],
+                      "Sort Stack using Recursion Bracket Balance Checker Stack using Queues")
+    assert block.text == "Sort Stack using Recursion\nBracket Balance Checker\nStack using Queues"
+
+
+def test_a_paragraph_whose_letters_the_pdf_does_not_have_stays_as_it_is(tmp_path):
+    block = _lines_of(tmp_path, ["Easy traversal", "Cache-friendly memory layout"], "Easy traversal Something else")
+    assert block.text == "Easy traversal Something else" and "line_breaks" not in block.extra
+
+
+def test_a_book_s_paragraphs_keep_their_sentences(tmp_path):
+    """Pages taller than wide: lines of a book's paragraph are one sentence that goes on."""
+    block = _lines_of(tmp_path, ["Pointers are an important feature", "Of C++"], width=612, height=792)
+    assert block.text == "Pointers are an important feature Of C++"

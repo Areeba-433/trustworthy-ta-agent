@@ -19,6 +19,10 @@ Two more things Docling does with an image, both seen on a deck of slides that a
   nothing, so it does not count as lying on the image;
 - it finds only a piece of the image (the diagram in the screenshot). Then the picture is the piece's: its box grows
   to the whole image, so a cut-out shows the slide, not a corner of it.
+
+A new picture goes after the last item on its page that stands above it. On slides, columns are common: there it
+goes after the last item above it in its own column, one that overlaps it sideways. DSA slide 14 has two code
+screenshots side by side, each under its label; by height alone both went after the second label.
 """
 import logging
 from collections import Counter
@@ -28,6 +32,8 @@ import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_c
 from docling_core.types.doc import (BoundingBox, CoordOrigin, DocItem, DoclingDocument, NodeItem, PictureItem,
                                     ProvenanceItem, TableItem)
+
+from app.ingestion.pdf_slides import is_slides
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +50,7 @@ def add_missed_pictures(doc: DoclingDocument, path: Path) -> int:
     reading order on its page; changes `doc` in place. Returns how many were added."""
     images = _images(path)
     repeated = Counter(key for _, _, key in images)
+    slides = is_slides(doc)
     added = grown = 0
     for page_no, box, key in images:
         if page_no not in doc.pages or repeated[key] >= _REPEATED:
@@ -56,7 +63,7 @@ def add_missed_pictures(doc: DoclingDocument, path: Path) -> int:
             grown += 1
             continue
         prov = ProvenanceItem(page_no=page_no, bbox=box, charspan=(0, 0))
-        sibling, after = _position(page_no, box.t, doc)
+        sibling, after = _position(page_no, box, doc, columns=slides)
         if sibling is None:
             doc.add_picture(prov=prov)
         else:
@@ -134,16 +141,21 @@ def _grow(picture: PictureItem, page_no: int, box: BoundingBox, doc: DoclingDocu
             return
 
 
-def _position(page_no: int, top: float, doc: DoclingDocument) -> tuple[NodeItem | None, bool]:
-    """Where the new picture goes among the body's items: after the last one on its page that stands above it,
-    else before the page's first item, else after the last item of an earlier page. (None, True) for an empty body."""
+def _position(page_no: int, box: BoundingBox, doc: DoclingDocument,
+              columns: bool = False) -> tuple[NodeItem | None, bool]:
+    """Where the new picture goes among the body's items: after the last one on its page that stands above it
+    (with `columns`, the last one above it that overlaps it sideways, if there is one), else before the page's
+    first item, else after the last item of an earlier page. (None, True) for an empty body."""
     placed = [(node, _first_prov(node, doc)) for node in (ref.resolve(doc) for ref in doc.body.children)]
     placed = [(node, prov) for node, prov in placed if prov is not None]
     height = doc.pages[page_no].size.height
-    on_page = [(node, prov) for node, prov in placed if prov.page_no == page_no]
-    above = [node for node, prov in on_page if prov.bbox.to_bottom_left_origin(height).t >= top]
+    on_page = [(node, prov.bbox.to_bottom_left_origin(height)) for node, prov in placed if prov.page_no == page_no]
+    above = [(node, other) for node, other in on_page if other.t >= box.t]
+    in_column = [node for node, other in above if min(other.r, box.r) > max(other.l, box.l)]
+    if columns and in_column:
+        return in_column[-1], True
     if above:
-        return above[-1], True
+        return above[-1][0], True
     if on_page:
         return on_page[0][0], False
     before = [node for node, prov in placed if prov.page_no < page_no]

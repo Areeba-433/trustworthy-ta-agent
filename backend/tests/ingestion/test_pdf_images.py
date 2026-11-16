@@ -142,6 +142,25 @@ def test_a_picture_on_a_page_with_nothing_else_goes_after_the_pages_before_it(tm
     assert _kinds(doc) == [("paragraph", "Page one.", 1), ("figure", "[Figure]", 2), ("paragraph", "Page three.", 3)]
 
 
+@pytest.mark.parametrize("width, height, after_its_label", [(960, 540, True), (612, 792, False)])
+def test_on_slides_a_picture_goes_under_its_label_in_its_own_column(tmp_path, width, height, after_its_label):
+    """DSA slide 14: two code screenshots side by side, each under its label. By height alone both went after the
+    second label; on slides, the column decides. A page taller than wide (a book) keeps the rule by height."""
+    path = write_pdf(tmp_path / "deck.pdf", [_draw(50, 150, 330, 230) + "\n" + _draw(500, 200, 300, 180)],
+                     mediabox=(0, 0, width, height), images=[_image()])
+    doc = DoclingDocument(name="deck")
+    doc.add_page(page_no=1, size=Size(width=width, height=height))
+    doc.add_heading("Code Snippets", level=1, prov=ProvenanceItem(page_no=1, bbox=_box(40, 470, 900, 510),
+                                                                  charspan=(0, 13)))
+    _text(doc, "Recursion - Array Rotation:", 1, (50, 400, 300, 415))
+    _text(doc, "Stack - Push and Pop:", 1, (500, 400, 750, 415))
+    assert add_missed_pictures(doc, path) == 2
+    order = [text for _, text, _ in _kinds(doc)]
+    assert order == (["Code Snippets", "Recursion - Array Rotation:", "[Figure]", "Stack - Push and Pop:", "[Figure]"]
+                     if after_its_label else
+                     ["Code Snippets", "Recursion - Array Rotation:", "Stack - Push and Pop:", "[Figure]", "[Figure]"])
+
+
 def test_the_pdf_loader_adds_the_missed_picture_and_gives_it_its_figure_label(tmp_path, monkeypatch, data_dir):
     """OOP book page 134: Docling dropped the switch-statement figure (a picture of code), but kept its label."""
     page = ("BT /F1 10 Tf 91 236 Td (FIGURE 3.12) Tj ET\n"

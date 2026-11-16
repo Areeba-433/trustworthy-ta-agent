@@ -6,7 +6,7 @@ from app.ingestion.converter import Conversion
 from app.ingestion.dispatcher import ingest_file
 from app.ingestion.docling_blocks import to_blocks
 from app.ingestion.loaders import pdf
-from app.ingestion.pdf_order import order_by_position
+from app.ingestion.pdf_order import heading_paths, order_by_position
 
 
 def _prov(top: float, bottom: float, left: float = 96, right: float = 470, page: int = 1) -> ProvenanceItem:
@@ -100,6 +100,104 @@ def test_a_narrow_line_at_the_left_edge_does_not_stop_a_centred_figure(tmp_path)
     doc.add_text(DocItemLabel.TEXT, "main()", parent=figure, prov=_prov(150, 160, left=189, right=214))
     assert _ordered(doc) == ["main()", "FIGURE 5.7 Passing by reference.",
                              "The & can be taken to mean reference to, so", "float& intp", "means intp is a reference."]
+
+
+def _page(*items: tuple, pages: int = 1) -> DoclingDocument:
+    """Docling's result for pages of letter size: items (label, text, prov, heading level) in Docling's order."""
+    doc = DoclingDocument(name="lab")
+    for page in range(1, pages + 1):
+        doc.add_page(page_no=page, size=Size(width=612, height=792))
+    for label, text, prov, *level in items:
+        if label == DocItemLabel.SECTION_HEADER:
+            doc.add_heading(text, level=level[0], prov=prov)
+        elif label == DocItemLabel.CODE:
+            doc.add_code(text, prov=prov)
+        else:
+            doc.add_text(label, text, prov=prov)
+    return doc
+
+
+def _paths(blocks) -> list[tuple[str, list[str]]]:
+    return [(b.text, b.heading_path[1:]) for b in blocks]
+
+
+def test_a_page_title_over_narrow_labels_goes_first_and_heads_the_tasks_docling_put_before_it():
+    """WA0027 page 1, measured from the PDF: "Lab Task 4" is centred at the top, "Name:" and "Task 1:" at the left
+    edge, and Docling put the title after Task 3. Moving up, the title stopped at "Task 1:" (they do not overlap
+    sideways), and Tasks 1 to 3 were not under it; Tasks 4 to 14 on the next pages were."""
+    code = {"left": 72, "right": 540}
+    doc = _page((DocItemLabel.TEXT, "Name: Farooq Ahmed", _prov(112, 126, left=73, right=216)),
+                (DocItemLabel.TEXT, "Roll no: BS CMAI 008", _prov(143, 154, left=73, right=210)),
+                (DocItemLabel.SECTION_HEADER, "Task 1:", _prov(173, 183, left=72, right=111), 2),
+                (DocItemLabel.CODE, "import numpy as np", _prov(196, 258, **code)),
+                (DocItemLabel.SECTION_HEADER, "Task 2:", _prov(297, 307, left=72, right=111), 2),
+                (DocItemLabel.CODE, "A = np.array([[1, -2 , 4]])", _prov(320, 625, **code)),
+                (DocItemLabel.SECTION_HEADER, "Task 3:", _prov(649, 659, left=72, right=111), 2),
+                (DocItemLabel.CODE, "np.ones((4,4))", _prov(672, 706, **code)),
+                (DocItemLabel.SECTION_HEADER, "Lab Task 4", _prov(77, 91, left=265, right=348), 1),
+                (DocItemLabel.SECTION_HEADER, "Task 4:", _prov(72, 82, left=72, right=111, page=2), 2),
+                (DocItemLabel.CODE, "np.random.rand(3,3)", _prov(95, 120, page=2, **code)), pages=2)
+    before = to_blocks(doc, "pdf", "Lab")
+    assert _paths(before)[2] == ("Task 1:", ["Task 1:"])
+    blocks = order_by_position(before, doc)
+    assert [b.seq for b in blocks] == list(range(len(blocks)))
+    assert _paths(blocks) == [("Lab Task 4", ["Lab Task 4"]),
+                              ("Name: Farooq Ahmed", ["Lab Task 4"]), ("Roll no: BS CMAI 008", ["Lab Task 4"]),
+                              ("Task 1:", ["Lab Task 4", "Task 1:"]), ("import numpy as np", ["Lab Task 4", "Task 1:"]),
+                              ("Task 2:", ["Lab Task 4", "Task 2:"]),
+                              ("A = np.array([[1, -2 , 4]])", ["Lab Task 4", "Task 2:"]),
+                              ("Task 3:", ["Lab Task 4", "Task 3:"]), ("np.ones((4,4))", ["Lab Task 4", "Task 3:"]),
+                              ("Task 4:", ["Lab Task 4", "Task 4:"]), ("np.random.rand(3,3)", ["Lab Task 4", "Task 4:"])]
+
+
+def test_a_heading_with_something_beside_it_higher_up_is_no_page_title():
+    """Two columns: the right column's heading starts lower than the left column's text, so it stays where it is."""
+    doc = _page((DocItemLabel.TEXT, "Left column, from the top.", _prov(80, 300, left=55, right=250)),
+                (DocItemLabel.SECTION_HEADER, "Right column", _prov(100, 115, left=300, right=470), 1),
+                (DocItemLabel.TEXT, "Right column text.", _prov(120, 200, left=300, right=470)))
+    assert [b.text for b in order_by_position(to_blocks(doc, "pdf", "Lab"), doc)] == [
+        "Left column, from the top.", "Right column", "Right column text."]
+
+
+def test_the_words_of_a_figure_moved_up_past_a_heading_are_in_the_section_above_it():
+    """Book page 842: Docling put the UML diagram's words after "Listing the Nouns" and its list; the order step
+    brought them back under their caption, but they kept the heading path of "Listing the Nouns"."""
+    doc = _page((DocItemLabel.SECTION_HEADER, "UML Activity Diagrams", _prov(40, 55), 2),
+                (DocItemLabel.CAPTION, "FIGURE 16.8 UML activity diagram.", _prov(60, 75)),
+                (DocItemLabel.SECTION_HEADER, "Listing the Nouns", _prov(300, 315), 2),
+                (DocItemLabel.TEXT, "Here's the list of nouns.", _prov(320, 350)))
+    figure = doc.add_picture(prov=_prov(80, 290, left=150, right=400))
+    for text, top in (("Display", 100), ("Add Tenant", 120)):
+        doc.add_text(DocItemLabel.TEXT, text, parent=figure, prov=_prov(top, top + 10, left=200, right=260))
+    blocks = order_by_position(to_blocks(doc, "pdf", "Book"), doc)
+    assert _paths(blocks) == [("UML Activity Diagrams", ["UML Activity Diagrams"]),
+                              ("FIGURE 16.8 UML activity diagram.", ["UML Activity Diagrams"]),
+                              ("Display", ["UML Activity Diagrams"]), ("Add Tenant", ["UML Activity Diagrams"]),
+                              ("Listing the Nouns", ["Listing the Nouns"]),
+                              ("Here's the list of nouns.", ["Listing the Nouns"])]
+
+
+def test_heading_paths_built_again_in_docling_s_order_are_the_ones_to_blocks_gave():
+    """Levels with gaps (a level-3 heading right under a level-1 one, a level-2 one before any level 1) and a title
+    above every level: built again in the same order, every path is what to_blocks() gave."""
+    doc = _page((DocItemLabel.SECTION_HEADER, "Task 1:", _prov(40, 50), 2),
+                (DocItemLabel.TEXT, "Before the title.", _prov(55, 65)),
+                (DocItemLabel.TITLE, "Lab Manual", _prov(70, 80)),
+                (DocItemLabel.SECTION_HEADER, "Chapter 1", _prov(90, 100), 1),
+                (DocItemLabel.SECTION_HEADER, "Deep", _prov(110, 120), 3),
+                (DocItemLabel.TEXT, "Under deep.", _prov(125, 135)),
+                (DocItemLabel.SECTION_HEADER, "Middle", _prov(140, 150), 2),
+                (DocItemLabel.TEXT, "Under middle.", _prov(155, 165)))
+    blocks = to_blocks(doc, "pdf", "Book")
+    assert heading_paths(blocks, doc) == blocks
+    assert _paths(blocks)[-1] == ("Under middle.", ["Lab Manual", "Chapter 1", "Middle"])
+
+
+def test_heading_paths_stay_when_a_heading_s_docling_item_is_unknown():
+    doc = _page((DocItemLabel.SECTION_HEADER, "Task 1:", _prov(40, 50), 2), (DocItemLabel.TEXT, "x", _prov(55, 65)))
+    blocks = to_blocks(doc, "pdf", "Book")
+    lost = [blocks[0].model_copy(update={"extra": {}, "heading_path": ["Book", "Other"]}), blocks[1]]
+    assert heading_paths(lost, doc) == lost
 
 
 def test_the_pdf_loader_puts_blocks_in_page_order(chapter_tab_pdf, monkeypatch, data_dir):

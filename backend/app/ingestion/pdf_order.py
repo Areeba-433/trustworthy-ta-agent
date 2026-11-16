@@ -12,11 +12,21 @@ page 210). Two blocks that do not overlap sideways are in one column too when a 
 reaches over both: on page 210 the code line "float& intp" at the left edge still stopped the centred figure, which
 ended up in the middle of a sentence, though the paragraph between them spans the page. Two real columns have no
 such block between them.
+
+A heading that stands above everything else on its page goes first on it, whatever the column: a page's title over
+two narrow labels (WA0027: "Lab Task 4" centred at the top, "Name:" and "Task 1:" at the left edge, and Docling
+put the title after Task 3) would otherwise stop at the first label it does not overlap.
+
+When anything moved, every block's heading path is built again in the new order, by the rule to_blocks() uses,
+with each heading's level from its Docling item. A block that moved past a heading now sits in the section above
+it: WA0027's Tasks 1 to 3 were outside "Lab Task 4", and the words inside two of the book's UML diagrams (pages
+842 and 848) kept the section of the text Docling had put them after.
 """
 import logging
 from collections.abc import Sequence
 
-from docling_core.types.doc import BoundingBox, ContentLayer, DocItem, DoclingDocument, PictureItem
+from docling_core.types.doc import (BoundingBox, ContentLayer, DocItem, DoclingDocument, PictureItem,
+                                    SectionHeaderItem)
 
 from app.ingestion.contract import Block
 
@@ -46,10 +56,53 @@ def order_by_position(blocks: Sequence[Block], doc: DoclingDocument) -> list[Blo
             units[j - 1], units[j] = units[j], units[j - 1]
             j -= 1
         moved += j != n
+    moved += _page_titles_first(units, places, boxes)
     if not moved:
         return list(blocks)
-    logger.info("%d blocks or figures moved up to where they stand on their page", moved)
-    return [b.model_copy(update={"seq": n}) for n, b in enumerate(b for _, unit in units for b in unit)]
+    moved_blocks = [b for _, unit in units for b in unit]
+    ordered = heading_paths(moved_blocks, doc)
+    logger.info("%d blocks or figures moved up to where they stand on their page; %d heading paths changed", moved,
+                sum(a.heading_path != b.heading_path for a, b in zip(moved_blocks, ordered)))
+    return [b.model_copy(update={"seq": n}) for n, b in enumerate(ordered)]
+
+
+def heading_paths(blocks: Sequence[Block], doc: DoclingDocument) -> list[Block]:
+    """The blocks with their heading paths built again in this order, as to_blocks() builds them: a heading closes
+    the open headings of its level and deeper ones, and opens its own. Its level is its Docling item's (from its
+    size, set_heading_levels()); a title is above every level. In Docling's order this gives every block the path
+    it had. If a heading's Docling item is not found, nothing changes."""
+    items = {item.self_ref: item for item in doc.texts}
+    open_headings: list[tuple[int, str]] = []        # (level, name) of the headings above the current block
+    out: list[Block] = []
+    for block in blocks:
+        if block.kind == "heading":
+            item = items.get(block.extra.get("ref"))
+            if item is None:
+                return list(blocks)
+            level = item.level if isinstance(item, SectionHeaderItem) else 0
+            open_headings = [h for h in open_headings if h[0] < level] + [(level, block.heading_path[-1])]
+        path = block.heading_path[:1] + [name for _, name in open_headings]
+        out.append(block if path == block.heading_path else block.model_copy(update={"heading_path": path}))
+    return out
+
+
+def _page_titles_first(units: list[tuple[str, list[Block]]], places: dict[str, tuple[int, BoundingBox]],
+                       boxes: dict[int, list[BoundingBox]]) -> int:
+    """Put each heading that stands above everything else on its page first on its page, in place; how many moved."""
+    moved = 0
+    for n in range(len(units)):
+        owner, unit = units[n]
+        place = places.get(owner)
+        if place is None or unit[0].kind != "heading":
+            continue
+        page, box = place
+        if not all(box.b <= other.t + _GAP for other in boxes.get(page, []) if other is not box):
+            continue
+        first = next(i for i, (o, _) in enumerate(units) if o in places and places[o][0] == page)
+        if first < n:
+            units.insert(first, units.pop(n))
+            moved += 1
+    return moved
 
 
 def _figure_of(doc: DoclingDocument) -> dict[str, str]:
