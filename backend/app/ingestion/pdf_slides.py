@@ -11,7 +11,10 @@ as_slides() keeps one heading per slide, its title, so a slide is one section:
 - every other heading on the slide becomes a paragraph, so "Advantages:" stays in the chunk's text;
 - a slide with the title of the slide before goes on with it (Pointers slides 8 to 12, "Accessing the Variable
   Pointed To"): its title heading is left out, so the chunker packs them as one section;
-- a slide without a title goes on with the slide before it.
+- a slide without a title goes on with the slide before it;
+- a slide whose title is the file's title (the deck's first slide, "Pointers" in Pointers.pptx.pdf) is under the
+  file's title only, and its title heading is left out, as to_blocks() leaves out a document title that is the
+  file's: no "Pointers > Pointers", and no section of its own (the slides before it stay in one section with it).
 
 A PDF is slides when every page is wider than tall: PowerPoint, Google Slides and Canva export that way; books, notes
 and assignments are taller than wide.
@@ -57,8 +60,9 @@ def as_slides(blocks: Sequence[Block], doc: DoclingDocument) -> list[Block]:
         goes_on = heading is not None and title is not None and _same(heading.text, title)
         if heading is not None:
             title = heading.text
-        path = [root, title] if title else [root]
-        if heading is not None and not goes_on:
+        named = title is not None and not _same(title, root)
+        path = [root, title] if named else [root]
+        if heading is not None and not goes_on and named:
             out.append(heading.model_copy(update={"heading_path": path}))
         for block in page:
             if block is not heading:

@@ -86,6 +86,21 @@ def test_a_slide_with_the_title_before_goes_on_with_it_and_one_without_a_title_t
     assert [b.seq for b in out] == list(range(6))
 
 
+def test_a_slide_titled_like_the_file_is_under_the_file_s_title_only():
+    """Pointers.pptx.pdf: slides 1 and 2 are titled "Pointers", the file's title. No "Pointers > Pointers", and no
+    section of its own: Linear Transformation's slide 1 (a picture before the title slide) stays with the rest."""
+    blocks = [Block(seq=0, kind="figure", text="[Figure]", heading_path=["Pointers"], loc=Location(page=1),
+                    figure_id="fig0"),
+              *_blocks((2, "heading", "Pointers", 1), (2, "list_item", "- Pointers are an important feature", 1),
+                       (3, "heading", "Pointer Variables", 1), (3, "list_item", "- A variable that holds", 1))]
+    blocks = [b.model_copy(update={"seq": n, "heading_path": ["Pointers", *b.heading_path[1:]]})
+              for n, b in enumerate(blocks)]
+    assert _out(as_slides(blocks, _doc(3))) == [
+        (1, "figure", "[Figure]", []), (2, "list_item", "- Pointers are an important feature", []),
+        (3, "heading", "Pointer Variables", ["Pointer Variables"]),
+        (3, "list_item", "- A variable that holds", ["Pointer Variables"])]
+
+
 def test_slides_before_the_first_title_stay_under_the_file_s_title():
     blocks = _blocks((1, "figure", "[Figure]", 0), (2, "heading", "Linear Transformation", 1))
     assert _out(as_slides(blocks, _doc(2))) == [(1, "figure", "[Figure]", []),

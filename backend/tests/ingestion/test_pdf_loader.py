@@ -1,4 +1,5 @@
 """The PDF loader: Docling's result (faked here, see conftest) becomes a ParsedDocument with page numbers."""
+import pytest
 from docling_core.types.doc import DoclingDocument
 
 from app.ingestion import messages, registry
@@ -8,8 +9,8 @@ from app.ingestion.dispatcher import ingest_file
 from app.ingestion.loaders import pdf
 
 
-def _meta(pages_total: int = 3, **precheck) -> ResourceMeta:
-    return ResourceMeta(resource_id="r1", course_id="c1", file_name="dsa_notes.pdf", file_sha256="a" * 64,
+def _meta(pages_total: int = 3, file_name: str = "dsa_notes.pdf", **precheck) -> ResourceMeta:
+    return ResourceMeta(resource_id="r1", course_id="c1", file_name=file_name, file_sha256="a" * 64,
                         precheck=PrecheckResult(source_type="pdf", pages_total=pages_total, **precheck))
 
 
@@ -25,6 +26,27 @@ def test_a_book_becomes_blocks_with_page_numbers(digital_pdf, data_dir):
     assert (doc.title, doc.parser, doc.parser_version) == ("digital", "docling", PARSER_VERSION)
     assert doc.quality.units_total == 3
     assert {"docling", "blocks"} <= set(doc.quality.seconds_taken)
+
+
+@pytest.mark.parametrize("file_name, title", [
+    ("Pointers.pptx.pdf", "Pointers"),
+    ("Linear Transformation -Autosaved-.pptx.pdf", "Linear Transformation"),
+    ("Linear Transformation (Autosaved).pptx.pdf", "Linear Transformation"),
+    ("BSEF23A018-Binary Analysis and Software Patching Assignment.docx.pdf",
+     "BSEF23A018 Binary Analysis and Software Patching Assignment"),
+    ("Pointers.pptx (1).pdf", "Pointers"),
+    ("Lecture_9_Stack_applications(2).ppt.pdf", "Lecture 9 Stack applications"),
+    ("DOC-20260308-WA0027..pdf", "DOC 20260308 WA0027"),
+    ("DSA_Presentation_Final.pdf", "DSA Presentation"),                 # title_from_filename() as before
+    ("Lecture 9.1 Stacks.pdf", "Lecture 9.1 Stacks"),                   # a dot that is no extension stays
+    ("Autosaved.pptx.pdf", "Autosaved.pptx"),                           # nothing else in the name: as before
+])
+def test_a_pdf_s_title_leaves_out_the_name_of_the_file_it_was_made_from(file_name, title):
+    assert pdf.pdf_title(file_name) == title
+
+
+def test_the_pdf_loader_titles_a_pdf_of_slides_by_its_own_name(digital_pdf):
+    assert pdf.load(digital_pdf, _meta(file_name="Pointers.pptx.pdf")).title == "Pointers"
 
 
 def test_a_picture_cover_is_a_note_and_the_status_stays_ok(make_pdf, data_dir):

@@ -11,7 +11,13 @@ keeps the exponent of a power of ten ("10^308"), order_by_position() puts what s
 as_slides() keeps one heading per slide when the PDF is slides (every page wider than tall) and keep_line_breaks()
 gives a slide's paragraphs their lines back ("Scope" points, one per line), join_page_listings()
 makes one block of a listing that a page break cut in two (not in slides: each slide's code is its own), and
-mark_figures() notes where each figure is, so an answer can show it."""
+mark_figures() notes where each figure is, so an answer can show it.
+
+The title comes from the file's name (teachers upload a file, nothing more), as title_from_filename() makes it,
+without what a PDF's name keeps of the file it was made from: "Pointers.pptx.pdf" is "Pointers", not
+"Pointers.pptx". The title starts every chunk's heading path, so it is embedded with every chunk and shown with
+every answer's source."""
+import re
 from pathlib import Path
 
 from app.ingestion import messages
@@ -34,6 +40,21 @@ from app.ingestion.registry import register
 from app.ingestion.storage import Timer
 
 
+_MADE_FROM = re.compile(r"\.(pptx?|docx?|odp|odt|key|pages)$", re.IGNORECASE)   # "Pointers.pptx" (.pdf removed)
+_AUTOSAVED = re.compile(r"[\s_-]*[(\[]?\s*autosaved\s*[)\]]?[\s_-]*", re.IGNORECASE)   # PowerPoint's "(Autosaved)"
+_COPY_NUMBER = re.compile(r"\s*\(\d+\)$")                                         # "Pointers.pptx (1).pdf"
+
+
+def pdf_title(file_name: str) -> str:
+    """title_from_filename() of the name without the slides' or document's own extension, PowerPoint's
+    "(Autosaved)" and dots left at the end: "Linear Transformation -Autosaved-.pptx.pdf" -> "Linear
+    Transformation", "DOC-20260308-WA0027..pdf" -> "DOC 20260308 WA0027". A name with nothing else keeps its
+    usual title."""
+    stem = _COPY_NUMBER.sub("", Path(file_name).stem)
+    stem = _AUTOSAVED.sub(" ", _MADE_FROM.sub("", stem)).strip(" ._-")
+    return title_from_filename(stem + ".pdf") if stem else title_from_filename(file_name)
+
+
 @register("pdf", heavy=True)
 def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
     timer = Timer()
@@ -41,7 +62,7 @@ def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
         conversion = convert(path, "pdf", meta.file_sha256)
     if conversion.from_cache:              # say so, or a cached run looks like a very fast Docling
         timer.seconds["docling_cache"] = timer.seconds.pop("docling")
-    title = title_from_filename(meta.file_name)
+    title = pdf_title(meta.file_name)
     with timer("chapter_tabs"):
         remove_chapter_tabs(conversion.document, path)
     with timer("contents"):
