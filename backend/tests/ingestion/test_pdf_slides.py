@@ -130,3 +130,20 @@ def test_the_pdf_loader_makes_one_section_of_a_slide(tmp_path, monkeypatch, data
                                                          ("paragraph", "Advantages:"),
                                                          ("paragraph", "Fast access using indexes")]
     assert "slides" in parsed.quality.seconds_taken
+
+
+def test_code_on_two_slides_under_one_title_stays_two_listings(tmp_path, monkeypatch, data_dir):
+    """Pointers slides 37 and 38, "Sorting Array Elements": order() on one, main() on the next. A book's page break
+    can cut a listing in two; a slide break does not, slides are made to hold their code."""
+    pages = [f"BT /F1 28 Tf 50 480 Td (Sorting) Tj ET\nBT /F2 12 Tf 50 400 Td ({code}) Tj ET"
+             for code in ("void order();", "int main();")]
+    path = write_pdf(tmp_path / "deck.pdf", pages, fonts=("Helvetica", "Courier"), mediabox=(0, 0, 960, 540))
+    doc = _doc(2)
+    for page, code in ((1, "void order();"), (2, "int main();")):
+        doc.add_heading("Sorting", level=1, prov=ProvenanceItem(page_no=page, bbox=_box(50, 475, 300, 510),
+                                                               charspan=(0, 7)))
+        doc.add_code(code, prov=ProvenanceItem(page_no=page, bbox=_box(50, 395, 300, 412), charspan=(0, len(code))))
+    monkeypatch.setattr(pdf, "convert", lambda *args, **kwargs: Conversion(doc))
+    parsed = ingest_file(path, "r1", "c1")
+    assert [(b.kind, b.text, b.loc.page) for b in parsed.blocks] == [
+        ("heading", "Sorting", 1), ("code", "void order();", 1), ("code", "int main();", 2)]
