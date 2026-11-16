@@ -9,8 +9,8 @@ from docx.shared import Pt
 from PIL import Image, ImageDraw
 from app.ingestion import messages
 from app.ingestion.contract import Block, Location
-from app.ingestion.loaders.docx import (_add_flowcharts, _drop_word_extras, _link_captions, _mark_captions,
-                                        _mark_code, _promote_titles)
+from app.ingestion.loaders.docx import (_add_flowcharts, _drop_word_extras, _join_scripts, _link_captions,
+                                        _mark_captions, _mark_code, _promote_titles)
 from app.ingestion.loaders.docx_flowchart import HEADER as FLOWCHART_HEADER
 from app.ingestion.loaders.docx_flowchart import Flowchart, read_flowcharts
 from app.ingestion.pipeline import process
@@ -333,6 +333,44 @@ def test_link_captions_below_then_above_and_never_a_table_caption():
     assert [(b.kind, b.text, b.figure_id) for b in out] == [
         ("caption", "Figure 1: below", "fig0"), ("caption", "Figure 2: above", "fig1"),
         ("paragraph", "Text.", None), ("figure", "[Figure]", "fig2"), ("caption", "Table 1: marks", None)]
+
+
+def test_superscript_and_subscript_are_written_out_in_one_block(make_docx, data_dir, word_tokens):
+    def build(doc):
+        doc.add_heading("Complexity", 1)
+        p = doc.add_paragraph("Bubble sort takes O(n")
+        p.add_run("2").font.superscript = True
+        p.add_run(") time.")
+        p = doc.add_paragraph("Water is H")
+        p.add_run("2").font.subscript = True
+        p.add_run("O and 2")
+        p.add_run("n").font.superscript = True
+        p.add_run(" grows faster than n")
+        p.add_run("3").font.superscript = True
+        p.add_run(".")
+        doc.add_paragraph("A plain line.")
+    texts = [b.text for b in process(make_docx(build=build), "w21", "c1").parsed.blocks]
+    assert texts[-3:] == ["Bubble sort takes O(n^2) time.", "Water is H_2O and 2^n grows faster than n^3.",
+                          "A plain line."]
+
+
+def test_join_scripts_puts_the_pieces_docling_cut_back_together():
+    blocks = [_block("Intro."), _block("SUP_REAL: O(n"), _block(") real superscript run."),
+              _block("SUP_POWER: 2"), _block("n"), _block("grows faster than n"), _block("Next.")]
+    out = _join_scripts(blocks, ["SUP_REAL: O(n^2) real superscript run.",
+                                 "SUP_POWER: 2^n grows faster than n^3."])
+    assert [b.text for b in out] == ["Intro.", "SUP_REAL: O(n^2) real superscript run.",
+                                     "SUP_POWER: 2^n grows faster than n^3.", "Next."]
+
+
+def test_a_file_of_headings_only_gets_one_chunk_of_its_headings(make_docx, data_dir, word_tokens):
+    def build(doc):
+        for text in ("Week 1: Arrays", "Week 2: Linked Lists", "Week 3: Stacks"):
+            doc.add_heading(text, 1)
+    result = process(make_docx(build=build), "w22", "c1")
+    assert result.status == "ok" and len(result.chunked.chunks) == 1
+    chunk = result.chunked.chunks[0]
+    assert chunk.text == "Week 1: Arrays\nWeek 2: Linked Lists\nWeek 3: Stacks" and chunk.kinds == ["heading"]
 
 
 # ---------------------------------------------------------------------------------------------------

@@ -31,6 +31,9 @@ _MONO_FONTS = {"consolas", "courier", "courier new", "lucida console", "lucida s
 _MONO_WORDS = ("mono", "code")              # Cascadia Mono, Roboto Mono, Source Code Pro, Fira Code ...
 _CODE_SHARE = 0.9                           # a paragraph is code when this share of its letters is monospace
 _NOT_CODE_STYLE = re.compile(r"heading|title|caption|toc|list")
+_RUN_SCRIPT = f'{qn("w:rPr")}/{qn("w:vertAlign")}'           # superscript / subscript
+_SCRIPT_MARK = {"superscript": "^", "subscript": "_"}       # O(n^2), H_2O: how a raised or lowered run is written
+_SCRIPT_SLACK = 3                           # letters: the raised/lowered text Docling may leave out, per gap
 _RUN_BOLD, _RUN_SIZE = f'{qn("w:rPr")}/{qn("w:b")}', f'{qn("w:rPr")}/{qn("w:sz")}'
 _OUTLINE = f'{qn("w:pPr")}/{qn("w:outlineLvl")}'
 _TITLE_WORDS = 12                          # a bold title line is short
@@ -49,6 +52,7 @@ class _WordFacts(NamedTuple):
     visible: dict[str, str]         # text of a paragraph with hidden words -> the same text without them
     code: list[list[str]]           # runs of paragraphs set in a monospace font, line by line as Word shows them
     titles: list[tuple[str, int]]   # bold title lines (key, level), only for a file without any heading style
+    scripts: list[str]              # paragraphs with superscript or subscript, written out: "O(n^2) time"
 
 
 def _norm(text: str) -> str:
@@ -78,6 +82,25 @@ def _own_runs(paragraph) -> list:
 def _run_text(paragraph, keep_hidden: bool) -> str:
     """The paragraph's text, run by run. Deleted text is never included."""
     return "".join(run.text for run in _own_runs(paragraph) if keep_hidden or not _is_hidden(run))
+
+
+def _script_text(paragraph) -> str | None:
+    """The paragraph's text with its superscript and subscript written out (O(n^2), H_2O, 2^n), or None
+    when it has none."""
+    parts: list[str] = []
+    found = False
+    for run in _own_runs(paragraph):
+        if _is_hidden(run):
+            continue
+        text = run.text
+        align = run.find(_RUN_SCRIPT)
+        mark = _SCRIPT_MARK.get(align.get(qn("w:val"), "")) if align is not None else None
+        if mark and text.strip():
+            found = True
+            text = text.strip()
+            text = f"{mark}{text}" if text.isalnum() else f"{mark}({text})"
+        parts.append(text)
+    return _norm("".join(parts)) if found else None
 
 
 def _is_mono(font: str | None) -> bool:
@@ -160,7 +183,7 @@ def _bold_share_and_size(paragraph, style, styles_by_id: dict) -> tuple[float, f
 
 
 def _word_facts(path: Path) -> _WordFacts:
-    empty = _WordFacts(captions=Counter(), skipped=Counter(), visible={}, code=[], titles=[])
+    empty = _WordFacts(captions=Counter(), skipped=Counter(), visible={}, code=[], titles=[], scripts=[])
     try:
         word = WordDocument(str(path))
     except Exception:
@@ -173,6 +196,7 @@ def _word_facts(path: Path) -> _WordFacts:
     has_headings = False
     title_lines: list[tuple[str, float]] = []    # (key, font size) of bold title lines
     styles_by_id = {style.style_id: style for style in word.styles}
+    scripts: list[str] = []
 
     def end_code_run() -> None:
         while lines and not lines[-1].strip():
@@ -202,6 +226,8 @@ def _word_facts(path: Path) -> _WordFacts:
         # Code is a paragraph, not a heading, caption or list item, (nearly) all in a monospace font.
         if any(True for _ in element.iterancestors(qn("w:tc"), qn("w:txbxContent"))):
             continue
+        if (written := _script_text(element)) is not None:
+            scripts.append(written)
         raw = _run_text(element, keep_hidden=False)
         paragraph_font = _style_font(style)
         mono = total = 0
@@ -238,7 +264,8 @@ def _word_facts(path: Path) -> _WordFacts:
     if not has_headings:                    # a file with real headings keeps its bold lines as paragraphs
         sizes = sorted({size for _, size in title_lines}, reverse=True)
         titles = [(key, min(sizes.index(size) + 1, _TITLE_LEVELS)) for key, size in title_lines]
-    return _WordFacts(captions=captions, skipped=skipped, visible=visible, code=code, titles=titles)
+    return _WordFacts(captions=captions, skipped=skipped, visible=visible, code=code, titles=titles,
+                      scripts=scripts)
 
 
 def _drop_word_extras(blocks: list[Block], skipped: Counter[str]) -> list[Block]:
@@ -317,6 +344,47 @@ def _mark_code(blocks: list[Block], code: list[list[str]]) -> list[Block]:
             if span:
                 text = "\n".join(line.rstrip() for line in lines).strip("\n")
                 out[first:first + span] = [out[first].model_copy(update={"kind": "code", "text": text, "lang": "code"})]
+                start = first + 1
+                break
+    return out
+
+
+def _letters(text: str) -> str:
+    return "".join(ch for ch in text.casefold() if ch.isalnum())
+
+
+def _script_span(blocks: list[Block], first: int, whole: str) -> int:
+    """How many blocks from `first` make up the paragraph whose letters are `whole`, allowing a few left-out
+    letters between them (the raised or lowered text); 0 if they don't."""
+    end = 0
+    for count, block in enumerate(blocks[first:], start=1):
+        piece = _letters(block.text)
+        if block.kind not in ("paragraph", "list_item") or not piece:
+            return 0
+        at = 0 if whole.startswith(piece) and count == 1 else whole.find(piece, end) if count > 1 else -1
+        if at < 0 or at - end > _SCRIPT_SLACK:
+            return 0
+        end = at + len(piece)
+        if len(whole) - end <= _SCRIPT_SLACK:
+            return count
+    return 0
+
+
+def _join_scripts(blocks: list[Block], scripts: list[str]) -> list[Block]:
+    """Put back superscript and subscript: "O(n^2)", not "O(n" + ") ..." with the 2 lost.
+
+    Docling cuts a paragraph where a run is raised or lowered, and the cleaner then drops a piece that is only
+    "2" or ".", so "O(n2)" came back as two blocks reading "O(n" and ") real superscript run." The pieces are
+    found by their letters and replaced by one block with Word's text, written with ^ and _.
+    """
+    out = list(blocks)
+    start = 0
+    for written in scripts:
+        whole = _letters(written)
+        for first in range(start, len(out)):
+            span = _script_span(out, first, whole)
+            if span:
+                out[first:first + span] = [out[first].model_copy(update={"text": written})]
                 start = first + 1
                 break
     return out
@@ -458,6 +526,7 @@ def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
     blocks = _drop_word_extras(blocks, facts.skipped)
     blocks = _drop_hidden_text(blocks, facts.visible)
     blocks = _mark_code(blocks, facts.code)
+    blocks = _join_scripts(blocks, facts.scripts)
     blocks = _mark_captions(blocks, facts.captions)
     blocks = _promote_titles(blocks, facts.titles, title)
     charts = _flowcharts(path)
