@@ -41,70 +41,70 @@ def _out(blocks: list[Block]) -> list[tuple[int, str, str, list[str]]]:
 
 
 def test_a_slide_s_labels_become_text_under_its_title():
-    """DSA slide 5: Docling made headings of "Programs:", "Advantages:", "Limitations:"."""
+    """A student presentation: Docling made headings of "Programs:", "Advantages:", "Limitations:"."""
     blocks = _blocks((5, "heading", "Array Implementation", 1), (5, "heading", "Programs:", 2),
-                     (5, "paragraph", "Array Rotation using Recursion", 2), (5, "heading", "Advantages:", 2),
+                     (5, "paragraph", "Rotation with a loop", 2), (5, "heading", "Advantages:", 2),
                      (5, "paragraph", "Fast O(1) access using indexes", 2))
     assert _out(as_slides(blocks, _doc(5))) == [
         (5, "heading", "Array Implementation", ["Array Implementation"]),
         (5, "paragraph", "Programs:", ["Array Implementation"]),
-        (5, "paragraph", "Array Rotation using Recursion", ["Array Implementation"]),
+        (5, "paragraph", "Rotation with a loop", ["Array Implementation"]),
         (5, "paragraph", "Advantages:", ["Array Implementation"]),
         (5, "paragraph", "Fast O(1) access using indexes", ["Array Implementation"])]
 
 
 def test_the_title_is_no_label_and_goes_first():
-    """DSA slide 1: "Name:" stands above the deck's title; slide 9: the title is smaller than its labels."""
-    blocks = _blocks((1, "heading", "Name:", 1), (1, "heading", "Data Structures and Algorithms Project", 1),
-                     (1, "list_item", "- Farooq Ahmed (008)", 1),
+    """A title slide: "Name:" stands above the deck's title; another slide: the title is smaller than its labels."""
+    blocks = _blocks((1, "heading", "Name:", 1), (1, "heading", "Course Project", 1),
+                     (1, "list_item", "- Student One (001)", 1),
                      (9, "heading", "Approach Used:", 1), (9, "heading", "Cracking the Code", 2),
                      (9, "list_item", "1. Understand the problem", 2))
     assert _out(as_slides(blocks, _doc(9))) == [
-        (1, "heading", "Data Structures and Algorithms Project", ["Data Structures and Algorithms Project"]),
-        (1, "paragraph", "Name:", ["Data Structures and Algorithms Project"]),
-        (1, "list_item", "- Farooq Ahmed (008)", ["Data Structures and Algorithms Project"]),
+        (1, "heading", "Course Project", ["Course Project"]),
+        (1, "paragraph", "Name:", ["Course Project"]),
+        (1, "list_item", "- Student One (001)", ["Course Project"]),
         (9, "heading", "Cracking the Code", ["Cracking the Code"]),
         (9, "paragraph", "Approach Used:", ["Cracking the Code"]),
         (9, "list_item", "1. Understand the problem", ["Cracking the Code"])]
 
 
 def test_a_slide_with_the_title_before_goes_on_with_it_and_one_without_a_title_too():
-    """Pointers slides 8 to 12: "Accessing the Variable Pointed To" five times. Linear Transformation: slides with
-    only a picture go on under the title before them."""
-    blocks = _blocks((8, "heading", "Accessing the Variable", 1), (8, "list_item", "- Suppose that ...", 1),
-                     (9, "heading", "Accessing the Variable", 1), (9, "code", "int main()", 1),
+    """A lecture deck with one title on five slides in a row; a deck of screenshots: slides with only a picture go
+    on under the title before them."""
+    blocks = _blocks((8, "heading", "Reading a Value", 1), (8, "list_item", "- Suppose that ...", 1),
+                     (9, "heading", "Reading a Value", 1), (9, "code", "int main()", 1),
                      (10, "figure", "[Figure]", 1),
-                     (11, "heading", "Pointer to void", 1), (11, "list_item", "- The address ...", 1))
+                     (11, "heading", "Writing a Value", 1), (11, "list_item", "- The address ...", 1))
     out = as_slides(blocks, _doc(11))
     assert _out(out) == [
-        (8, "heading", "Accessing the Variable", ["Accessing the Variable"]),
-        (8, "list_item", "- Suppose that ...", ["Accessing the Variable"]),
-        (9, "code", "int main()", ["Accessing the Variable"]),
-        (10, "figure", "[Figure]", ["Accessing the Variable"]),
-        (11, "heading", "Pointer to void", ["Pointer to void"]),
-        (11, "list_item", "- The address ...", ["Pointer to void"])]
+        (8, "heading", "Reading a Value", ["Reading a Value"]),
+        (8, "list_item", "- Suppose that ...", ["Reading a Value"]),
+        (9, "code", "int main()", ["Reading a Value"]),
+        (10, "figure", "[Figure]", ["Reading a Value"]),
+        (11, "heading", "Writing a Value", ["Writing a Value"]),
+        (11, "list_item", "- The address ...", ["Writing a Value"])]
     assert [b.seq for b in out] == list(range(6))
 
 
 def test_a_slide_titled_like_the_file_is_under_the_file_s_title_only():
-    """Pointers.pptx.pdf: slides 1 and 2 are titled "Pointers", the file's title. No "Pointers > Pointers", and no
-    section of its own: Linear Transformation's slide 1 (a picture before the title slide) stays with the rest."""
-    blocks = [Block(seq=0, kind="figure", text="[Figure]", heading_path=["Pointers"], loc=Location(page=1),
+    """Lecture 5.pptx.pdf: slides 1 and 2 are titled "Lecture 5", the file's title. No "Lecture 5 > Lecture 5", and
+    no section of its own: a deck's slide 1 (a picture before the title slide) stays with the rest."""
+    blocks = [Block(seq=0, kind="figure", text="[Figure]", heading_path=["Lecture 5"], loc=Location(page=1),
                     figure_id="fig0"),
-              *_blocks((2, "heading", "Pointers", 1), (2, "list_item", "- Pointers are an important feature", 1),
+              *_blocks((2, "heading", "Lecture 5", 1), (2, "list_item", "- Arrays hold values of one type", 1),
                        (3, "heading", "Pointer Variables", 1), (3, "list_item", "- A variable that holds", 1))]
-    blocks = [b.model_copy(update={"seq": n, "heading_path": ["Pointers", *b.heading_path[1:]]})
+    blocks = [b.model_copy(update={"seq": n, "heading_path": ["Lecture 5", *b.heading_path[1:]]})
               for n, b in enumerate(blocks)]
     assert _out(as_slides(blocks, _doc(3))) == [
-        (1, "figure", "[Figure]", []), (2, "list_item", "- Pointers are an important feature", []),
+        (1, "figure", "[Figure]", []), (2, "list_item", "- Arrays hold values of one type", []),
         (3, "heading", "Pointer Variables", ["Pointer Variables"]),
         (3, "list_item", "- A variable that holds", ["Pointer Variables"])]
 
 
 def test_slides_before_the_first_title_stay_under_the_file_s_title():
-    blocks = _blocks((1, "figure", "[Figure]", 0), (2, "heading", "Linear Transformation", 1))
+    blocks = _blocks((1, "figure", "[Figure]", 0), (2, "heading", "Vectors", 1))
     assert _out(as_slides(blocks, _doc(2))) == [(1, "figure", "[Figure]", []),
-                                                (2, "heading", "Linear Transformation", ["Linear Transformation"])]
+                                                (2, "heading", "Vectors", ["Vectors"])]
 
 
 @pytest.mark.parametrize("width, height, slides", [(960, 540, True), (720, 405, True), (612, 792, False),
@@ -119,12 +119,12 @@ def test_a_book_s_blocks_are_left_alone():
 
 
 def test_a_bullet_docling_left_in_a_list_item_s_text_is_dropped():
-    """Pointers deck: "- ·Pointers are an important feature of C++"."""
+    """A Google Slides deck: "- ·Arrays hold values of one type."."""
     doc = _doc(1)
     group = doc.add_list_group()
-    doc.add_list_item("·Pointers are an important feature of C++.", parent=group)
+    doc.add_list_item("·Arrays hold values of one type.", parent=group)
     doc.add_list_item("• Accessing array elements.", parent=group)
-    assert [b.text for b in to_blocks(doc, "pdf", T)] == ["- Pointers are an important feature of C++.",
+    assert [b.text for b in to_blocks(doc, "pdf", T)] == ["- Arrays hold values of one type.",
                                                          "- Accessing array elements."]
 
 
@@ -149,7 +149,7 @@ def test_the_pdf_loader_makes_one_section_of_a_slide(tmp_path, monkeypatch, data
 
 
 def test_code_on_two_slides_under_one_title_stays_two_listings(tmp_path, monkeypatch, data_dir):
-    """Pointers slides 37 and 38, "Sorting Array Elements": order() on one, main() on the next. A book's page break
+    """Two slides under one title: order() on one, main() on the next. A book's page break
     can cut a listing in two; a slide break does not, slides are made to hold their code."""
     pages = [f"BT /F1 28 Tf 50 480 Td (Sorting) Tj ET\nBT /F2 12 Tf 50 400 Td ({code}) Tj ET"
              for code in ("void order();", "int main();")]
@@ -191,12 +191,12 @@ def _lines_of(tmp_path, lines: list[str], docling_text: str | None = None, **pag
 
 
 def test_a_slide_paragraph_gets_its_lines_back_and_a_word_moved_down_goes_on(tmp_path):
-    """DSA slide 3: Docling read three points as one sentence. "system" starts with a small letter and did not fit
+    """A slide's three points that Docling read as one sentence. "application" starts with a small letter and did not fit
     at the end of the line above: PowerPoint moved it down, it is no point of its own."""
-    block = _lines_of(tmp_path, ["Implementation of 20 DSA problems", "Individual testing and dry runs",
-                                               "Integration into a single menu-driven", "system"])
-    assert block.text == ("Implementation of 20 DSA problems\nIndividual testing and dry runs\n"
-                          "Integration into a single menu-driven system")
+    block = _lines_of(tmp_path, ["Ten small programs written in C++", "Each program tested on its own",
+                                               "All of them joined into one menu-driven", "application"])
+    assert block.text == ("Ten small programs written in C++\nEach program tested on its own\n"
+                          "All of them joined into one menu-driven application")
     assert block.extra["line_breaks"] == 2
 
 
@@ -207,18 +207,18 @@ def test_a_small_letter_that_would_have_fitted_above_starts_a_line_of_its_own(tm
 
 
 def test_docling_s_dash_without_its_space_still_matches_the_pdf_s_dash(tmp_path):
-    """DSA slide 10: the PDF has "Insertion – O(log n)", Docling "Insertion -O(log n)". Docling's words stay."""
+    """A slide: the PDF has "Insertion – O(log n)", Docling "Insertion -O(log n)". Docling's words stay."""
     block = _lines_of(tmp_path, ["Insertion \u2013 O(log n)", "Deletion \u2013 O(log n)"],
                       "Insertion -O(log n) Deletion -O(log n)")
     assert block.text == "Insertion -O(log n)\nDeletion -O(log n)"
 
 
 def test_a_line_of_another_item_inside_the_box_is_left_out(tmp_path):
-    """DSA slide 7: Docling made an item of the third line, inside the box of the three points around it."""
-    block = _lines_of(tmp_path, ["Sort Stack using Recursion", "Bracket Balance Checker",
-                                 "Min Stack \u2013 O(1) minimum retrieval", "Stack using Queues"],
-                      "Sort Stack using Recursion Bracket Balance Checker Stack using Queues")
-    assert block.text == "Sort Stack using Recursion\nBracket Balance Checker\nStack using Queues"
+    """Docling made an item of the third line, inside the box of the three points around it."""
+    block = _lines_of(tmp_path, ["Reverse a List", "Check Balanced Brackets",
+                                 "Queue with Two Stacks \u2013 O(1) on average", "Find the Middle Node"],
+                      "Reverse a List Check Balanced Brackets Find the Middle Node")
+    assert block.text == "Reverse a List\nCheck Balanced Brackets\nFind the Middle Node"
 
 
 def test_a_paragraph_whose_letters_the_pdf_does_not_have_stays_as_it_is(tmp_path):
@@ -228,5 +228,5 @@ def test_a_paragraph_whose_letters_the_pdf_does_not_have_stays_as_it_is(tmp_path
 
 def test_a_book_s_paragraphs_keep_their_sentences(tmp_path):
     """Pages taller than wide: lines of a book's paragraph are one sentence that goes on."""
-    block = _lines_of(tmp_path, ["Pointers are an important feature", "Of C++"], width=612, height=792)
-    assert block.text == "Pointers are an important feature Of C++"
+    block = _lines_of(tmp_path, ["Arrays hold values of one type", "Of C++"], width=612, height=792)
+    assert block.text == "Arrays hold values of one type Of C++"

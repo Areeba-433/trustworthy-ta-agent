@@ -43,7 +43,7 @@ def _picture_slides(tmp_path, pages: int, cover: float):
 
 
 def test_slides_that_are_pictures_are_listed_but_not_refused(tmp_path):
-    """Linear Transformation: each slide a screenshot covering 36-46% of its wide page, no text at all."""
+    """A deck of screenshots: each slide a screenshot covering 36-46% of its wide page, no text at all."""
     result = precheck(_picture_slides(tmp_path, pages=7, cover=0.4))
     assert result.ok
     assert result.scanned_pages == [1, 2, 3, 4, 5, 6, 7]       # the loader warns about them

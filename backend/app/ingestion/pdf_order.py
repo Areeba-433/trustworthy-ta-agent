@@ -14,12 +14,12 @@ ended up in the middle of a sentence, though the paragraph between them spans th
 such block between them.
 
 A heading that stands above everything else on its page goes first on it, whatever the column: a page's title over
-two narrow labels (WA0027: "Lab Task 4" centred at the top, "Name:" and "Task 1:" at the left edge, and Docling
-put the title after Task 3) would otherwise stop at the first label it does not overlap.
+two narrow labels (a lab sheet: "Lab 4" centred at the top, "Name:" and "Task 1:" at the left edge, and Docling put
+the title after Task 3) would otherwise stop at the first label it does not overlap.
 
 When anything moved, every block's heading path is built again in the new order, by the rule to_blocks() uses,
 with each heading's level from its Docling item. A block that moved past a heading now sits in the section above
-it: WA0027's Tasks 1 to 3 were outside "Lab Task 4", and the words inside two of the book's UML diagrams (pages
+it: the lab sheet's Tasks 1 to 3 were outside "Lab 4", and the words inside two of the book's UML diagrams (pages
 842 and 848) kept the section of the text Docling had put them after.
 """
 import logging

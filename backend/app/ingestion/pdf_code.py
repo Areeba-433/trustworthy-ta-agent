@@ -68,7 +68,7 @@ _SENTENCE_SHARE = 0.2  # a line with this share of its letters in an ordinary fo
 # Docling turns these into plain ASCII in all text; we do the same so both versions can be compared word by word.
 # In code they are wrong anyway: a student who copies “hello” into a compiler gets an error.
 _ASCII = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', "⁄": "/", "\x02": "-",
-                        "—": "-", "–": "-",                # long dashes: book page 168, "variable—dining—of"
+                        "—": "-", "–": "-",                # long dashes: "a—b—c" in a code comment
                         "•": "·"})                         # a bullet Docling reads as "·" (Google Slides' Calibri)
 _LIGATURES = range(0xFB00, 0xFB07)                      # ﬀ ﬁ ﬂ ﬃ ﬄ ﬅ ﬆ
 _PRIVATE = range(0xE000, 0xF900)    # a font's own drawing pieces (the OOP book's long arrows): no character at all
@@ -568,9 +568,9 @@ def _parts(chars: list[_Char]) -> list[tuple[str, list[_Char]]]:
 
 def _line_kind(line: list[_Char], width: float) -> str:
     """ "code" or "sentence". A line whose first piece, before a gap, is in the code font is code: program output
-    with a note beside it ("dist2 = 1.78435 meters  <- this is 5'-10.25"", book page 373). Otherwise a line is a
+    with a note beside it ("total = 42.5  <- the sum so far"). Otherwise a line is a
     sentence when a fifth or more of its letters and digits are in an ordinary font: a sentence can be full of code
-    words ("tions master_tick() and get_floor_requests() over and over. The wait() function", book page 700),
+    words ("calls update() and draw() again and again. The run() method"),
     while a line of code has none in an ordinary font, or only an answer's number ("13. cout << setw(10);"). A line
     of unknown fonts stays code."""
     letters = [c for c in line if c.text.isalnum()]
@@ -721,7 +721,7 @@ def _line_text(line: list[_Char], left: float, width: float) -> str:
     of different widths) has no columns: its words get single spaces. Inside a word the letters simply follow each
     other, or a wide letter would push the next one into another column and look like a space ("An d"). Each piece
     of such a line still starts in its column: program output with a note beside it keeps the gap before the note
-    ("c1=0        <- counts are initially 0", book page 348)."""
+    ("n=0        <- starts at zero")."""
     widths = [c.right - c.left for c in line]
     if max(widths) - min(widths) > 0.1 * width:
         pieces = [[line[0]]]

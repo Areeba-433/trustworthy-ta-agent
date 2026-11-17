@@ -28,7 +28,7 @@ def _book() -> DoclingDocument:
     doc.add_text(DocItemLabel.TEXT, "This is shown in Figure 9.7.", prov=prov(72, 600, 500, 612))
     picture = doc.add_picture(prov=prov(100, 300, 400, 500))
     doc.add_text(DocItemLabel.TEXT, "class A", parent=picture, prov=prov(200, 450, 260, 460))
-    caption = doc.add_text(DocItemLabel.CAPTION, "FIGURE 9.7 Public and private derivation.", parent=picture,
+    caption = doc.add_text(DocItemLabel.CAPTION, "FIGURE 9.7 Two kinds of access.", parent=picture,
                            prov=prov(100, 280, 400, 292))
     picture.captions.append(caption.get_ref())
     return doc
@@ -77,9 +77,9 @@ def _captioned(label: str, line: DocItemLabel, gap: float = 3, left: float = 91)
     doc.add_page(page_no=1, size=Size(width=595, height=842))
     doc.add_text(DocItemLabel.CAPTION, label, prov=prov(91, 450, 135, 459))
     layer = ContentLayer.BODY if line == DocItemLabel.TEXT else ContentLayer.FURNITURE
-    doc.add_text(line, "Passing by reference in the REF program.", content_layer=layer,
+    doc.add_text(line, "Passing a value by reference.", content_layer=layer,
                  prov=prov(left, 450 - gap - 7, left + 131, 450 - gap))
-    doc.add_text(DocItemLabel.TEXT, "Reference arguments are indicated by the ampersand.", prov=prov(91, 400, 417, 409))
+    doc.add_text(DocItemLabel.TEXT, "A reference argument is marked with an ampersand.", prov=prov(91, 400, 417, 409))
     return doc
 
 
@@ -90,8 +90,8 @@ def test_a_caption_that_is_only_its_label_gets_its_description_back(line):
     doc = _captioned("FIGURE 5.7", line)
     assert join_caption_lines(doc) == 1
     assert [(b.kind, b.text) for b in to_blocks(doc, "pdf", "OOP book")] == [
-        ("caption", "FIGURE 5.7 Passing by reference in the REF program."),
-        ("paragraph", "Reference arguments are indicated by the ampersand.")]
+        ("caption", "FIGURE 5.7 Passing a value by reference."),
+        ("paragraph", "A reference argument is marked with an ampersand.")]
 
 
 @pytest.mark.parametrize("caption, gap, left", [("FIGURE 5.7 Passing by value.", 3, 91), ("FIGURE 5.7", 15, 91),
@@ -122,7 +122,7 @@ def _labelled(label: str = "FIGURE 2.3", kind: DocItemLabel = DocItemLabel.SECTI
         doc.add_heading(label, level=1, prov=where)
     else:
         doc.add_text(kind, label, prov=where)
-    doc.add_text(DocItemLabel.TEXT, "Variable of type int in memory.", prov=prov(56, 368, 160, 375))
+    doc.add_text(DocItemLabel.TEXT, "An int in memory.", prov=prov(56, 368, 160, 375))
     doc.add_text(DocItemLabel.TEXT, "Each variable has an address.", prov=prov(56, 330, 500, 342))
     return doc
 
@@ -140,7 +140,7 @@ def test_a_figure_label_read_as_a_heading_becomes_the_figures_caption_with_its_d
     assert [(b.kind, b.text, b.figure_id) for b in blocks] == [
         ("heading", "Variables", None),
         ("paragraph", "A variable has a name and a value.", None),
-        ("caption", "FIGURE 2.3 Variable of type int in memory.", "fig0"),
+        ("caption", "FIGURE 2.3 An int in memory.", "fig0"),
         ("paragraph", "Each variable has an address.", None),
     ]
     assert blocks[-1].heading_path == ["OOP book", "Variables"]           # not "... > FIGURE 2.3"
@@ -169,7 +169,7 @@ def test_text_that_is_not_the_figures_label_is_left_alone(label, kind, box, page
 
 def test_a_label_alone_wins_over_a_caption_that_goes_on():
     doc = _labelled("FIGURE 2.10")                                           # the label, 12 points down
-    doc.add_text(DocItemLabel.CAPTION, "Figure 2.10 emphasizes the operator.", prov=prov(100, 392, 400, 398))
+    doc.add_text(DocItemLabel.CAPTION, "Figure 2.10 shows the operator.", prov=prov(100, 392, 400, 398))
     link_figure_labels(doc)
     assert [ref.resolve(doc).text for ref in doc.pictures[0].captions] == ["FIGURE 2.10"]
 

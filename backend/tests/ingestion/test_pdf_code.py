@@ -133,17 +133,17 @@ def test_a_sentence_that_docling_put_in_the_listing_becomes_a_paragraph_in_its_p
 
 
 def test_sentences_between_two_pieces_of_code_leave_the_listing(listing_pdf):
-    """Book page 184: question 18 came out as one code block, "18. State the reason that enum isWord{ NO, YES };
-    is better than enum isWord{ YES, NO };". The sentences are in the book's text font."""
-    lines = LISTING + [("sentence", "18. State the reason that"), "enum isWord{ NO, YES };",
-                       ("sentence", "is better than"), "enum isWord{ YES, NO };"]
+    """Book page 184: a review question came out as one code block: two sentences in the book's text font, each
+    followed by a line of code."""
+    lines = LISTING + [("sentence", "7. Explain why"), "enum Mode{ OFF, ON };",
+                       ("sentence", "is safer than"), "enum Mode{ ON, OFF };"]
     path, box = listing_pdf(lines)       # the code above gives the code font enough letters to be recognised
-    words = "18. State the reason that enum isWord{ NO, YES }; is better than enum isWord{ YES, NO };"
+    words = "7. Explain why enum Mode{ OFF, ON }; is safer than enum Mode{ ON, OFF };"
     doc = book(squashed(LISTING) + " " + words, box)
     blocks = restore_code_lines(to_blocks(doc, "pdf", "Book"), doc, path)
     assert [(b.kind, b.text) for b in blocks] == [
-        ("code", "\n".join(LISTING)), ("paragraph", "18. State the reason that"), ("code", "enum isWord{ NO, YES };"),
-        ("paragraph", "is better than"), ("code", "enum isWord{ YES, NO };")]
+        ("code", "\n".join(LISTING)), ("paragraph", "7. Explain why"), ("code", "enum Mode{ OFF, ON };"),
+        ("paragraph", "is safer than"), ("code", "enum Mode{ ON, OFF };")]
 
 
 def test_a_note_beside_program_output_stays_with_it_and_keeps_its_gap(listing_pdf):
@@ -159,13 +159,13 @@ def test_a_note_beside_program_output_stays_with_it_and_keeps_its_gap(listing_pd
 
 
 def test_a_long_dash_in_the_pdf_matches_docling_s_plain_one(listing_pdf):
-    """Book page 168: the PDF has "variable—dining—of", Docling "variable-dining-of". With the long dash the
+    """Book page 168: the PDF has long dashes in a comment ("value—always—positive"), Docling plain ones. With the long dash the
     words did not match, and Docling's one-line text was kept. (The dash is in the code font here: on Windows the
     test PDF's Times-Roman long dash came out apart from its letters; the real book's dashes do not.)"""
-    lines = LISTING + ["int n;   // a variable—dining—of type Room"]
+    lines = LISTING + ["int n;   // a value—always—positive"]
     path, box = listing_pdf(lines)
-    doc = book(squashed(LISTING) + " int n; // a variable-dining-of type Room", box)
-    assert rebuilt(doc, path) == "\n".join(LISTING + ["int n;   // a variable-dining-of type Room"])
+    doc = book(squashed(LISTING) + " int n; // a value-always-positive", box)
+    assert rebuilt(doc, path) == "\n".join(LISTING + ["int n;   // a value-always-positive"])
 
 
 def test_a_paragraph_whose_box_reaches_the_chapter_tab_still_gets_its_code_lines(listing_pdf):
@@ -193,11 +193,11 @@ def test_a_word_broken_at_the_end_of_a_line_in_a_listing_is_joined_as_docling_jo
 
 def test_a_font_s_drawing_pieces_are_dropped():
     """The OOP book draws a long arrow as "←" and three pieces of the Symbol font (U+F8E7), invisible junk."""
-    assert _ascii("c1=0 ←\uf8e7\uf8e7\uf8e7 counts") == "c1=0 ← counts"
+    assert _ascii("n=0 ←\uf8e7\uf8e7\uf8e7 starts") == "n=0 ← starts"
 
 
 def test_both_bullets_are_the_same_character_in_the_comparison():
-    """Pointers deck (Google Slides): the PDF has "•", Docling read "·": 2 listings kept flat over that alone."""
+    """A Google Slides deck: the PDF has "•", Docling read "·": 2 listings kept flat over that alone."""
     assert _ascii("• int* iptr;") == _ascii("· int* iptr;")
 
 
@@ -301,10 +301,10 @@ def test_a_listing_inside_a_paragraph_comes_out_as_code_between_its_sentences(li
 
 
 def test_a_paragraph_all_in_the_code_font_is_code(listing_pdf):
-    """Book page 177: "enum pets { cat, dog, hamster, canary, ocelot };" came out as a paragraph."""
-    path, _ = listing_pdf(LISTING + ["enum pets { cat, dog };"])
-    doc = _book_with_listing((DocItemLabel.TEXT, "enum pets { cat, dog };", len(LISTING), len(LISTING)))
-    assert _after_listing(doc, path) == [("code", "enum pets { cat, dog };")]
+    """Book page 177: a whole line of code in the code font came out as a paragraph."""
+    path, _ = listing_pdf(LISTING + ["enum colors { red, blue };"])
+    doc = _book_with_listing((DocItemLabel.TEXT, "enum colors { red, blue };", len(LISTING), len(LISTING)))
+    assert _after_listing(doc, path) == [("code", "enum colors { red, blue };")]
 
 
 def test_a_formula_in_the_code_font_is_code(listing_pdf):
@@ -394,11 +394,11 @@ def test_a_paragraph_whose_words_are_not_all_in_its_box_is_left_alone(listing_pd
 
 
 def test_a_word_broken_at_the_end_of_a_line_is_one_of_docling_s_words(listing_pdf):
-    """pdfium marks the break of "struc-ture" with U+FFFE; Docling joins the halves."""
+    """pdfium marks the break of "num-ber" with U+FFFE; Docling joins the halves."""
     n = len(LISTING)
-    path, _ = listing_pdf(LISTING + [("sentence", "the name of the inner struc-"), ("sentence", "ture is"), "Distance"])
-    doc = _book_with_listing((DocItemLabel.TEXT, "the name of the inner structure is Distance", n, n + 2))
-    assert _after_listing(doc, path) == [("paragraph", "the name of the inner structure is"), ("code", "Distance")]
+    path, _ = listing_pdf(LISTING + [("sentence", "the type of the loop's num-"), ("sentence", "ber is"), "Counter"])
+    doc = _book_with_listing((DocItemLabel.TEXT, "the type of the loop's number is Counter", n, n + 2))
+    assert _after_listing(doc, path) == [("paragraph", "the type of the loop's number is"), ("code", "Counter")]
 
 
 def test_a_listing_of_only_sentences_is_a_paragraph_in_a_book_with_a_code_font(listing_pdf):
@@ -583,7 +583,7 @@ def test_a_listing_of_sentences_with_a_few_code_words_is_a_paragraph(listing_pdf
 
 
 def test_a_sentence_full_of_code_words_is_still_a_sentence(listing_pdf):
-    """Book page 700: "tions master_tick() and get_floor_requests() over and over. The wait() function" has more
+    """Book page 700: a sentence with two function names has more
     letters in the code font than in Times, but it is a sentence: a line of code has no Times words at all."""
     path, _ = listing_pdf(LISTING + [("inline", "calls the ", "get_floor_requests()")])
     doc = _book_with_listing((DocItemLabel.CODE, "calls the get_floor_requests()", len(LISTING), len(LISTING)))
@@ -591,7 +591,7 @@ def test_a_sentence_full_of_code_words_is_still_a_sentence(listing_pdf):
 
 
 def test_program_output_with_a_note_after_an_arrow_stays_code(listing_pdf):
-    """Book page 256: "someClass() : m1(7), m2(33) <- initializer list". The arrow's font is not known."""
+    """Book page 256: program output with a note after an arrow. The arrow's font is not known."""
     path, _ = listing_pdf(LISTING + [("note", "m1(7), m2(33), m3(4)", "<- initializer list")])
     doc = _book_with_listing((DocItemLabel.CODE, "m1(7), m2(33), m3(4) <- initializer list", len(LISTING),
                               len(LISTING)))

@@ -87,7 +87,7 @@ def test_an_image_at_the_same_place_on_three_pages_is_a_decoration(tmp_path, pag
 
 
 def test_an_empty_box_docling_drew_over_an_image_does_not_hide_it(tmp_path):
-    """Linear Transformation: Docling put "formulas" with no text over the equations in each slide's screenshot."""
+    """A deck of slide screenshots: Docling put "formulas" with no text over the equations in each slide's screenshot."""
     path = _pdf(tmp_path, [_draw(79, 54, 653, 342)])
     doc = _doc()
     doc.add_text(DocItemLabel.FORMULA, "", prov=ProvenanceItem(page_no=1, bbox=_box(241, 341, 517, 362),
@@ -96,7 +96,7 @@ def test_an_empty_box_docling_drew_over_an_image_does_not_hide_it(tmp_path):
 
 
 def test_a_picture_docling_found_in_a_piece_of_an_image_grows_to_the_whole_image(tmp_path):
-    """Linear Transformation slide 1: Docling found only the diagram in the screenshot of a slide."""
+    """A slide screenshot: Docling found only the diagram in the screenshot of a slide."""
     path = _pdf(tmp_path, [_draw(100, 100, 400, 300)])
     doc = _doc()
     doc.add_picture(prov=ProvenanceItem(page_no=1, bbox=_box(300, 150, 450, 300), charspan=(0, 0)))
@@ -144,21 +144,21 @@ def test_a_picture_on_a_page_with_nothing_else_goes_after_the_pages_before_it(tm
 
 @pytest.mark.parametrize("width, height, after_its_label", [(960, 540, True), (612, 792, False)])
 def test_on_slides_a_picture_goes_under_its_label_in_its_own_column(tmp_path, width, height, after_its_label):
-    """DSA slide 14: two code screenshots side by side, each under its label. By height alone both went after the
+    """A slide with two code screenshots side by side, each under its label. By height alone both went after the
     second label; on slides, the column decides. A page taller than wide (a book) keeps the rule by height."""
     path = write_pdf(tmp_path / "deck.pdf", [_draw(50, 150, 330, 230) + "\n" + _draw(500, 200, 300, 180)],
                      mediabox=(0, 0, width, height), images=[_image()])
     doc = DoclingDocument(name="deck")
     doc.add_page(page_no=1, size=Size(width=width, height=height))
-    doc.add_heading("Code Snippets", level=1, prov=ProvenanceItem(page_no=1, bbox=_box(40, 470, 900, 510),
-                                                                  charspan=(0, 13)))
-    _text(doc, "Recursion - Array Rotation:", 1, (50, 400, 300, 415))
-    _text(doc, "Stack - Push and Pop:", 1, (500, 400, 750, 415))
+    doc.add_heading("Examples", level=1, prov=ProvenanceItem(page_no=1, bbox=_box(40, 470, 900, 510),
+                                                                  charspan=(0, 8)))
+    _text(doc, "Rotation:", 1, (50, 400, 300, 415))
+    _text(doc, "Push and pop:", 1, (500, 400, 750, 415))
     assert add_missed_pictures(doc, path) == 2
     order = [text for _, text, _ in _kinds(doc)]
-    assert order == (["Code Snippets", "Recursion - Array Rotation:", "[Figure]", "Stack - Push and Pop:", "[Figure]"]
+    assert order == (["Examples", "Rotation:", "[Figure]", "Push and pop:", "[Figure]"]
                      if after_its_label else
-                     ["Code Snippets", "Recursion - Array Rotation:", "Stack - Push and Pop:", "[Figure]", "[Figure]"])
+                     ["Examples", "Rotation:", "Push and pop:", "[Figure]", "[Figure]"])
 
 
 def test_the_pdf_loader_adds_the_missed_picture_and_gives_it_its_figure_label(tmp_path, monkeypatch, data_dir):

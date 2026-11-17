@@ -333,18 +333,18 @@ def test_a_figure_is_never_shared_with_the_next_section():
 
 
 def test_a_book_figure_is_shared_with_its_words_and_caption():
-    """OOP book page 84: FIGURE 2.x ends a chunk; "These conversions take place invisibly ..." starts the next."""
+    """A book page: a FIGURE caption ends a chunk; the text under the figure starts the next."""
     doc = _doc({"text": _text(300)},
                {"kind": "figure_text", "text": "int float double", "figure_id": "fig17"},
-               {"kind": "caption", "text": "FIGURE 2.6 Data conversion.", "figure_id": "fig17"},
-               {"text": "These conversions take place invisibly " + _text(150)})
+               {"kind": "caption", "text": "FIGURE 2.6 Types in memory.", "figure_id": "fig17"},
+               {"text": "Each type takes a different amount of memory " + _text(150)})
     drafts = _chunk(doc, share_figures=True)
     assert [d.block_seqs for d in drafts] == [[0, 1, 2], [1, 2, 3]]
-    assert drafts[1].text.startswith("int float double\n\nFIGURE 2.6 Data conversion.\n\nThese conversions")
+    assert drafts[1].text.startswith("int float double\n\nFIGURE 2.6 Types in memory.\n\nEach type takes")
 
 
 def test_a_chunk_that_is_only_a_figure_is_not_copied_into_the_next_chunk():
-    """Pointers slide 39: seven rows of numbers inside a picture fill a chunk of their own; the table after them is
+    """A slide whose picture holds seven rows of numbers: they inside a picture fill a chunk of their own; the table after them is
     on the same page. That chunk already is the figure's: copying it would only repeat the rows."""
     doc = _doc({"kind": "figure_text", "text": _text(70, "37"), "figure_id": "fig6", "loc": {"page": 39}},
                {"kind": "table", "text": _text(340, "|"), "loc": {"page": 39}})
@@ -364,11 +364,11 @@ def _listing(first_line: str, lines: int = 120) -> str:
 
 
 def test_later_pieces_of_a_cut_listing_say_which_listing_they_are():
-    """OOP book chunk 808: a piece from the middle of HORSE began with "time_t aTime;" and named no program."""
-    listing = _listing("// horse.cpp")
-    drafts = _chunk(_doc({"kind": "code", "text": listing, "path": ["Horse Race"]}), name_pieces=True)
-    assert len(drafts) > 1 and drafts[0].text.startswith("// horse.cpp\n")
-    assert all(d.text.startswith("// horse.cpp (continued)\n") for d in drafts[1:])
+    """A piece from the middle of a long listing began with a plain statement and named no program."""
+    listing = _listing("// shapes.cpp")
+    drafts = _chunk(_doc({"kind": "code", "text": listing, "path": ["Shapes"]}), name_pieces=True)
+    assert len(drafts) > 1 and drafts[0].text.startswith("// shapes.cpp\n")
+    assert all(d.text.startswith("// shapes.cpp (continued)\n") for d in drafts[1:])
     assert all(words(d.text) <= 384 + 4 for d in drafts)
     pieces = [drafts[0].text] + [d.text.split("\n", 1)[1] for d in drafts[1:]]
     assert "\n".join(pieces) == listing                            # the listing itself is unchanged
@@ -397,5 +397,5 @@ def test_the_pdf_chunker_shares_figures_and_names_pieces(word_tokens):
     from app.ingestion.chunking.chunkers import pdf
     chunked = pdf.chunk(_screenshot_then_text())
     assert [c.figure_ids for c in chunked.chunks] == [["r1:fig14"], ["r1:fig14"]]
-    chunked = pdf.chunk(_doc({"kind": "code", "text": _listing("// horse.cpp")}))
-    assert chunked.chunks[1].text.startswith("// horse.cpp (continued)\n")
+    chunked = pdf.chunk(_doc({"kind": "code", "text": _listing("// shapes.cpp")}))
+    assert chunked.chunks[1].text.startswith("// shapes.cpp (continued)\n")

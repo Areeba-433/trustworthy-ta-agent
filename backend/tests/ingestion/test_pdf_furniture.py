@@ -93,10 +93,10 @@ def test_with_a_tab_in_ordinary_letters_a_real_heading_with_its_words_is_kept(ma
 
 def test_a_code_listing_loses_the_tab_at_its_end_and_nothing_else(chapter_tab_pdf):
     doc = DoclingDocument(name="b")
-    doc.add_code("class laborer : public employee { }; 9 INHERITANCE", prov=_to_tab(chapter_tab_pdf))
+    doc.add_code("class circle : public shape { }; 9 INHERITANCE", prov=_to_tab(chapter_tab_pdf))
     doc.add_code("#define TITLE A", prov=_to_tab(chapter_tab_pdf))         # one tab letter is not the tab
     remove_chapter_tabs(doc, chapter_tab_pdf)
-    assert _texts(doc) == ["class laborer : public employee { };", "#define TITLE A"]
+    assert _texts(doc) == ["class circle : public shape { };", "#define TITLE A"]
 
 
 def test_a_separator_line_loses_the_tab_at_its_end(chapter_tab_pdf):

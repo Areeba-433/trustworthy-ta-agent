@@ -29,15 +29,14 @@ def test_a_book_becomes_blocks_with_page_numbers(digital_pdf, data_dir):
 
 
 @pytest.mark.parametrize("file_name, title", [
-    ("Pointers.pptx.pdf", "Pointers"),
-    ("Linear Transformation -Autosaved-.pptx.pdf", "Linear Transformation"),
-    ("Linear Transformation (Autosaved).pptx.pdf", "Linear Transformation"),
-    ("BSEF23A018-Binary Analysis and Software Patching Assignment.docx.pdf",
-     "BSEF23A018 Binary Analysis and Software Patching Assignment"),
-    ("Pointers.pptx (1).pdf", "Pointers"),
+    ("Lecture 5.pptx.pdf", "Lecture 5"),
+    ("Vectors -Autosaved-.pptx.pdf", "Vectors"),
+    ("Vectors (Autosaved).pptx.pdf", "Vectors"),
+    ("AB12-Software Patching Assignment.docx.pdf", "AB12 Software Patching Assignment"),
+    ("Lecture 5.pptx (1).pdf", "Lecture 5"),
     ("Lecture_9_Stack_applications(2).ppt.pdf", "Lecture 9 Stack applications"),
-    ("DOC-20260308-WA0027..pdf", "DOC 20260308 WA0027"),
-    ("DSA_Presentation_Final.pdf", "DSA Presentation"),                 # title_from_filename() as before
+    ("DOC-20260101-WA0001..pdf", "DOC 20260101 WA0001"),
+    ("Course_Presentation_Final.pdf", "Course Presentation"),                 # title_from_filename() as before
     ("Lecture 9.1 Stacks.pdf", "Lecture 9.1 Stacks"),                   # a dot that is no extension stays
     ("Autosaved.pptx.pdf", "Autosaved.pptx"),                           # nothing else in the name: as before
 ])
@@ -46,7 +45,7 @@ def test_a_pdf_s_title_leaves_out_the_name_of_the_file_it_was_made_from(file_nam
 
 
 def test_the_pdf_loader_titles_a_pdf_of_slides_by_its_own_name(digital_pdf):
-    assert pdf.load(digital_pdf, _meta(file_name="Pointers.pptx.pdf")).title == "Pointers"
+    assert pdf.load(digital_pdf, _meta(file_name="Lecture 5.pptx.pdf")).title == "Lecture 5"
 
 
 def test_a_picture_cover_is_a_note_and_the_status_stays_ok(make_pdf, data_dir):
@@ -74,7 +73,7 @@ def test_docling_problems_come_first(digital_pdf, monkeypatch, fake_docling_pdf)
 
 
 def test_a_file_whose_pages_are_mostly_pictures_is_a_problem_the_teacher_sees(digital_pdf):
-    """Slides made of screenshots (Linear Transformation: 6 of 7): accepted, but marked, so the teacher knows."""
+    """Slides made of screenshots (one deck: 6 of 7): accepted, but marked, so the teacher knows."""
     doc = pdf.load(digital_pdf, _meta(pages_total=7, scanned_pages=[1, 2, 3, 4, 5, 7]))
     assert doc.quality.status == "degraded"
     assert doc.quality.warnings == ["6 of 7 pages (1 to 5, 7) are pictures with no readable text, so questions "

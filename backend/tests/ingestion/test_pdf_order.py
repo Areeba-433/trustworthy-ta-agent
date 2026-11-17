@@ -122,32 +122,32 @@ def _paths(blocks) -> list[tuple[str, list[str]]]:
 
 
 def test_a_page_title_over_narrow_labels_goes_first_and_heads_the_tasks_docling_put_before_it():
-    """WA0027 page 1, measured from the PDF: "Lab Task 4" is centred at the top, "Name:" and "Task 1:" at the left
+    """A lab sheet, with positions measured from a real PDF: "Lab 4" is centred at the top, "Name:" and "Task 1:" at the left
     edge, and Docling put the title after Task 3. Moving up, the title stopped at "Task 1:" (they do not overlap
     sideways), and Tasks 1 to 3 were not under it; Tasks 4 to 14 on the next pages were."""
     code = {"left": 72, "right": 540}
-    doc = _page((DocItemLabel.TEXT, "Name: Farooq Ahmed", _prov(112, 126, left=73, right=216)),
-                (DocItemLabel.TEXT, "Roll no: BS CMAI 008", _prov(143, 154, left=73, right=210)),
+    doc = _page((DocItemLabel.TEXT, "Name: Student Name", _prov(112, 126, left=73, right=216)),
+                (DocItemLabel.TEXT, "Roll no: XX-000", _prov(143, 154, left=73, right=210)),
                 (DocItemLabel.SECTION_HEADER, "Task 1:", _prov(173, 183, left=72, right=111), 2),
-                (DocItemLabel.CODE, "import numpy as np", _prov(196, 258, **code)),
+                (DocItemLabel.CODE, "x = 1", _prov(196, 258, **code)),
                 (DocItemLabel.SECTION_HEADER, "Task 2:", _prov(297, 307, left=72, right=111), 2),
-                (DocItemLabel.CODE, "A = np.array([[1, -2 , 4]])", _prov(320, 625, **code)),
+                (DocItemLabel.CODE, "y = [1, 2, 3]", _prov(320, 625, **code)),
                 (DocItemLabel.SECTION_HEADER, "Task 3:", _prov(649, 659, left=72, right=111), 2),
-                (DocItemLabel.CODE, "np.ones((4,4))", _prov(672, 706, **code)),
-                (DocItemLabel.SECTION_HEADER, "Lab Task 4", _prov(77, 91, left=265, right=348), 1),
+                (DocItemLabel.CODE, "z = x + 2", _prov(672, 706, **code)),
+                (DocItemLabel.SECTION_HEADER, "Lab 4", _prov(77, 91, left=265, right=348), 1),
                 (DocItemLabel.SECTION_HEADER, "Task 4:", _prov(72, 82, left=72, right=111, page=2), 2),
-                (DocItemLabel.CODE, "np.random.rand(3,3)", _prov(95, 120, page=2, **code)), pages=2)
+                (DocItemLabel.CODE, "print(z)", _prov(95, 120, page=2, **code)), pages=2)
     before = to_blocks(doc, "pdf", "Lab")
     assert _paths(before)[2] == ("Task 1:", ["Task 1:"])
     blocks = order_by_position(before, doc)
     assert [b.seq for b in blocks] == list(range(len(blocks)))
-    assert _paths(blocks) == [("Lab Task 4", ["Lab Task 4"]),
-                              ("Name: Farooq Ahmed", ["Lab Task 4"]), ("Roll no: BS CMAI 008", ["Lab Task 4"]),
-                              ("Task 1:", ["Lab Task 4", "Task 1:"]), ("import numpy as np", ["Lab Task 4", "Task 1:"]),
-                              ("Task 2:", ["Lab Task 4", "Task 2:"]),
-                              ("A = np.array([[1, -2 , 4]])", ["Lab Task 4", "Task 2:"]),
-                              ("Task 3:", ["Lab Task 4", "Task 3:"]), ("np.ones((4,4))", ["Lab Task 4", "Task 3:"]),
-                              ("Task 4:", ["Lab Task 4", "Task 4:"]), ("np.random.rand(3,3)", ["Lab Task 4", "Task 4:"])]
+    assert _paths(blocks) == [("Lab 4", ["Lab 4"]),
+                              ("Name: Student Name", ["Lab 4"]), ("Roll no: XX-000", ["Lab 4"]),
+                              ("Task 1:", ["Lab 4", "Task 1:"]), ("x = 1", ["Lab 4", "Task 1:"]),
+                              ("Task 2:", ["Lab 4", "Task 2:"]),
+                              ("y = [1, 2, 3]", ["Lab 4", "Task 2:"]),
+                              ("Task 3:", ["Lab 4", "Task 3:"]), ("z = x + 2", ["Lab 4", "Task 3:"]),
+                              ("Task 4:", ["Lab 4", "Task 4:"]), ("print(z)", ["Lab 4", "Task 4:"])]
 
 
 def test_a_heading_with_something_beside_it_higher_up_is_no_page_title():
@@ -160,21 +160,21 @@ def test_a_heading_with_something_beside_it_higher_up_is_no_page_title():
 
 
 def test_the_words_of_a_figure_moved_up_past_a_heading_are_in_the_section_above_it():
-    """Book page 842: Docling put the UML diagram's words after "Listing the Nouns" and its list; the order step
-    brought them back under their caption, but they kept the heading path of "Listing the Nouns"."""
-    doc = _page((DocItemLabel.SECTION_HEADER, "UML Activity Diagrams", _prov(40, 55), 2),
-                (DocItemLabel.CAPTION, "FIGURE 16.8 UML activity diagram.", _prov(60, 75)),
-                (DocItemLabel.SECTION_HEADER, "Listing the Nouns", _prov(300, 315), 2),
-                (DocItemLabel.TEXT, "Here's the list of nouns.", _prov(320, 350)))
+    """Book page 842: Docling put a diagram's words after the next heading and its text; the order step brought
+    them back under their caption, but they kept the heading path of that next heading."""
+    doc = _page((DocItemLabel.SECTION_HEADER, "Activity Diagrams", _prov(40, 55), 2),
+                (DocItemLabel.CAPTION, "FIGURE 3.2 An activity diagram.", _prov(60, 75)),
+                (DocItemLabel.SECTION_HEADER, "Finding the Classes", _prov(300, 315), 2),
+                (DocItemLabel.TEXT, "Here are the classes.", _prov(320, 350)))
     figure = doc.add_picture(prov=_prov(80, 290, left=150, right=400))
-    for text, top in (("Display", 100), ("Add Tenant", 120)):
+    for text, top in (("Start", 100), ("Add Item", 120)):
         doc.add_text(DocItemLabel.TEXT, text, parent=figure, prov=_prov(top, top + 10, left=200, right=260))
     blocks = order_by_position(to_blocks(doc, "pdf", "Book"), doc)
-    assert _paths(blocks) == [("UML Activity Diagrams", ["UML Activity Diagrams"]),
-                              ("FIGURE 16.8 UML activity diagram.", ["UML Activity Diagrams"]),
-                              ("Display", ["UML Activity Diagrams"]), ("Add Tenant", ["UML Activity Diagrams"]),
-                              ("Listing the Nouns", ["Listing the Nouns"]),
-                              ("Here's the list of nouns.", ["Listing the Nouns"])]
+    assert _paths(blocks) == [("Activity Diagrams", ["Activity Diagrams"]),
+                              ("FIGURE 3.2 An activity diagram.", ["Activity Diagrams"]),
+                              ("Start", ["Activity Diagrams"]), ("Add Item", ["Activity Diagrams"]),
+                              ("Finding the Classes", ["Finding the Classes"]),
+                              ("Here are the classes.", ["Finding the Classes"])]
 
 
 def test_heading_paths_built_again_in_docling_s_order_are_the_ones_to_blocks_gave():

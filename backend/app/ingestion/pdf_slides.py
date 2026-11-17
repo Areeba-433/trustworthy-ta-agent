@@ -9,25 +9,25 @@ as_slides() keeps one heading per slide, its title, so a slide is one section:
 - the title is the first heading on the slide that is not a label ending in ":" ("Name:" on a title slide is a label),
   the shallowest if there are several; a slide with only labels takes its first. It goes first on its slide;
 - every other heading on the slide becomes a paragraph, so "Advantages:" stays in the chunk's text;
-- a slide with the title of the slide before goes on with it (Pointers slides 8 to 12, "Accessing the Variable
-  Pointed To"): its title heading is left out, so the chunker packs them as one section;
+- a slide with the title of the slide before goes on with it (a lecture deck with one title
+  on five slides in a row): its title heading is left out, so the chunker packs them as one section;
 - a slide without a title goes on with the slide before it;
-- a slide whose title is the file's title (the deck's first slide, "Pointers" in Pointers.pptx.pdf) is under the
+- a slide whose title is the file's title (the deck's first slide, "Lecture 5" in Lecture 5.pptx.pdf) is under the
   file's title only, and its title heading is left out, as to_blocks() leaves out a document title that is the
-  file's: no "Pointers > Pointers", and no section of its own (the slides before it stay in one section with it).
+  file's: no "Lecture 5 > Lecture 5", and no section of its own (the slides before it stay in one section with it).
 
 A PDF is slides when every page is wider than tall: PowerPoint, Google Slides and Canva export that way; books, notes
 and assignments are taller than wide.
 
 keep_line_breaks() gives a slide's lines back. A slide lists short points one per line, often without bullets, and
-Docling makes one paragraph of a text box: DSA slide 3 read "Implementation of 20 DSA problems Individual testing
-and dry runs Integration into a single menu-driven system", three points as one sentence. The PDF still has the
+Docling makes one paragraph of a text box: a slide's three points "Ten small programs Each program tested on its own All
+of them joined into one menu-driven application" came out as one sentence. The PDF still has the
 lines. Between two of them the text gets a line break, unless the second line only goes on with the first: it
-starts with a small letter ("system", "concepts") and its first word would not have fitted at the end of the line
+starts with a small letter ("application", "values") and its first word would not have fitted at the end of the line
 before, so PowerPoint moved it down. A word broken with a hyphen goes on too. Only paragraphs change, and only when
 the PDF's lines in the paragraph's box have exactly Docling's letters (spaces and dashes aside); a line of another
-item inside the box is left out (DSA slide 7: Docling made an item of "Min Stack — O(1) minimum retrieval", inside
-the box of the three points around it). The words stay Docling's: only spaces become line breaks.
+item inside the box is left out (Docling once made an item of one
+line inside the box of the three points around it). The words stay Docling's: only spaces become line breaks.
 """
 import logging
 from collections.abc import Sequence

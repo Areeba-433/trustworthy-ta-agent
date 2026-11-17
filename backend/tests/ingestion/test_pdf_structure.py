@@ -95,12 +95,12 @@ def _chapter_doc() -> DoclingDocument:
     doc.add_heading("Inheritance", level=1, prov=_prov(26, 780, "Inheritance", 2))
     doc.add_heading("IN THIS CHAPTER", level=2, prov=_prov(17, 740, "IN THIS CHAPTER", 2))
     group = doc.add_list_group()
-    doc.add_list_item("Derived Class and Base Class 373", parent=group, prov=_prov(10, 720, "Derived", 2))
+    doc.add_list_item("Base and Derived Classes 373", parent=group, prov=_prov(10, 720, "Base", 2))
     doc.add_text(DocItemLabel.TEXT, "CHAPTER", prov=_prov(13, 600, "CHAPTER", 2))
     doc.add_text(DocItemLabel.TEXT, "9", prov=_prov(40, 560, "9", 2))
-    doc.add_text(DocItemLabel.TEXT, "Inheritance is probably the most powerful feature.", prov=_prov(10, 500, "x", 2))
+    doc.add_text(DocItemLabel.TEXT, "This chapter is about inheritance.", prov=_prov(10, 500, "x", 2))
     doc.add_text(DocItemLabel.TEXT, "Structures", prov=_prov(26, 780, "Structures", 3))
-    doc.add_text(DocItemLabel.TEXT, "A structure is a collection of variables.", prov=_prov(10, 700, "x", 3))
+    doc.add_text(DocItemLabel.TEXT, "This chapter is about structures.", prov=_prov(10, 700, "x", 3))
     doc.add_text(DocItemLabel.TEXT, "ASCII Chart APPENDIX", prov=_prov(26, 780, "x", 4))
     doc.add_text(DocItemLabel.TEXT, "A", prov=_prov(40, 740, "A", 4))
     doc.add_text(DocItemLabel.TEXT, "Table A.1 shows the IBM character codes.", prov=_prov(10, 700, "x", 4))
@@ -114,14 +114,14 @@ def test_chapters_are_named_after_the_pdf_s_bookmarks(tmp_path):
     assert [(b.text, b.heading_path[1:]) for b in blocks] == [
         ("Chapter 9: Inheritance", ["Chapter 9: Inheritance"]),
         ("IN THIS CHAPTER", ["Chapter 9: Inheritance", "IN THIS CHAPTER"]),
-        ("- Derived Class and Base Class 373", ["Chapter 9: Inheritance", "IN THIS CHAPTER"]),
+        ("- Base and Derived Classes 373", ["Chapter 9: Inheritance", "IN THIS CHAPTER"]),
         # the printed label starts the chapter's own text again: it is not part of the IN THIS CHAPTER list,
         # and the big "9" under it is left out
         ("Chapter 9: Inheritance", ["Chapter 9: Inheritance"]),
-        ("Inheritance is probably the most powerful feature.", ["Chapter 9: Inheritance"]),
+        ("This chapter is about inheritance.", ["Chapter 9: Inheritance"]),
         # Docling read this title as a paragraph: it becomes the heading
         ("Chapter 4: Structures", ["Chapter 4: Structures"]),
-        ("A structure is a collection of variables.", ["Chapter 4: Structures"]),
+        ("This chapter is about structures.", ["Chapter 4: Structures"]),
         # Docling missed this title: a heading goes before the page's first item
         ("Appendix A: ASCII Chart", ["Appendix A: ASCII Chart"]),
         ("ASCII Chart APPENDIX", ["Appendix A: ASCII Chart"]),

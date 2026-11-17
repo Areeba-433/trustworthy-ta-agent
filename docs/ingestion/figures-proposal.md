@@ -24,7 +24,7 @@ Decision proposed: **show the picture at answer time.**
 - `render_figure(pdf_path, figure)` cuts that box out of the stored original PDF as a PNG: about 50 ms and 70 KB for
   Figure 9.7 at 150 dpi. No image is stored anywhere.
 
-Retrieval finds a figure through its caption ("FIGURE 9.7 Public and private derivation") and the paragraph that
+Retrieval finds a figure through its caption ("FIGURE 9.7 Two kinds of access") and the paragraph that
 refers to it, which usually share a chunk. From the chunk, `block_seqs` lead to the blocks in `parsed.json`, and the
 note on the caption block leads to the figure.
 

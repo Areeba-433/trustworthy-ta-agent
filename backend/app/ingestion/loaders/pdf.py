@@ -14,8 +14,8 @@ makes one block of a listing that a page break cut in two (not in slides: each s
 mark_figures() notes where each figure is, so an answer can show it.
 
 The title comes from the file's name (teachers upload a file, nothing more), as title_from_filename() makes it,
-without what a PDF's name keeps of the file it was made from: "Pointers.pptx.pdf" is "Pointers", not
-"Pointers.pptx". The title starts every chunk's heading path, so it is embedded with every chunk and shown with
+without what a PDF's name keeps of the file it was made from: "Lecture 5.pptx.pdf" is "Lecture 5", not
+"Lecture 5.pptx". The title starts every chunk's heading path, so it is embedded with every chunk and shown with
 every answer's source."""
 import re
 from pathlib import Path
@@ -40,15 +40,15 @@ from app.ingestion.registry import register
 from app.ingestion.storage import Timer
 
 
-_MADE_FROM = re.compile(r"\.(pptx?|docx?|odp|odt|key|pages)$", re.IGNORECASE)   # "Pointers.pptx" (.pdf removed)
+_MADE_FROM = re.compile(r"\.(pptx?|docx?|odp|odt|key|pages)$", re.IGNORECASE)   # "Lecture 5.pptx" (.pdf removed)
 _AUTOSAVED = re.compile(r"[\s_-]*[(\[]?\s*autosaved\s*[)\]]?[\s_-]*", re.IGNORECASE)   # PowerPoint's "(Autosaved)"
-_COPY_NUMBER = re.compile(r"\s*\(\d+\)$")                                         # "Pointers.pptx (1).pdf"
+_COPY_NUMBER = re.compile(r"\s*\(\d+\)$")                                         # "Lecture 5.pptx (1).pdf"
 
 
 def pdf_title(file_name: str) -> str:
     """title_from_filename() of the name without the slides' or document's own extension, PowerPoint's
-    "(Autosaved)" and dots left at the end: "Linear Transformation -Autosaved-.pptx.pdf" -> "Linear
-    Transformation", "DOC-20260308-WA0027..pdf" -> "DOC 20260308 WA0027". A name with nothing else keeps its
+    "(Autosaved)" and dots left at the end: "Vectors -Autosaved-.pptx.pdf" -> "Vectors",
+    "DOC-20260101-WA0001..pdf" -> "DOC 20260101 WA0001". A name with nothing else keeps its
     usual title."""
     stem = _COPY_NUMBER.sub("", Path(file_name).stem)
     stem = _AUTOSAVED.sub(" ", _MADE_FROM.sub("", stem)).strip(" ._-")

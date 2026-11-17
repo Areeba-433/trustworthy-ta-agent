@@ -17,7 +17,7 @@ the chunk being packed, while the paragraph after it often does not: the break t
 the text under it that explains it ("This screenshot shows ..."), and an answer from that text would show the wrong
 picture. Which side a figure belongs to differs from document to document (and inside one), so it goes to both.
 With name_pieces=True (PDF), the later pieces of a listing cut in pieces start with a line naming the listing,
-"// horse.cpp (continued)", taken from the listing's own first line, so a piece from the middle still says which
+"// shapes.cpp (continued)", taken from the listing's own first line, so a piece from the middle still says which
 program it is part of. A listing whose first line names no file gets no such line.
 Headings add no text: the heading path already travels with every chunk and is embedded with it.
 Every chunk lists the figures of its blocks (figure_ids), so a figure is never lost between blocks and chunks.
@@ -34,7 +34,7 @@ TARGET_TOKENS = 384         # starting values from the plan; the evaluation ques
 MIN_TOKENS = 64
 SEPARATOR = "\n\n"          # between the blocks of one chunk
 _JOIN_ALLOWANCE = 2         # tokens a separator may add between joined blocks (finish() checks the exact count)
-# a listing's first line naming its file: "// horse.cpp", "# plot.py", "/* sort.c */", "-- query.sql"
+# a listing's first line naming its file: "// shapes.cpp", "# plot.py", "/* sort.c */", "-- query.sql"
 _FILE_COMMENT = re.compile(r"[ \t]*(//|#|/\*|--)[ \t]*([\w.-]+\.\w{1,4})\b")
 
 
@@ -114,7 +114,7 @@ def _fit(block: Block, target: int, count: TokenCounter, name_pieces: bool = Fal
 
 
 def _continued(listing: str) -> str | None:
-    """The line that starts a later piece of `listing`: "// horse.cpp (continued)", in the listing's own comment
+    """The line that starts a later piece of `listing`: "// shapes.cpp (continued)", in the listing's own comment
     style; None when its first line names no file."""
     found = _FILE_COMMENT.match(listing.lstrip("\n").split("\n", 1)[0])
     if found is None:
@@ -175,7 +175,7 @@ def _share_figures(drafts: list[Draft], section: list[Block], count: TokenCounte
     """A figure that ends a chunk also starts the next chunk of the section when that chunk starts on the figure's
     page, if the two still fit the limit. The figure is every block of it at the end of the chunk: its [Figure], or
     its words and caption. Not when the next chunk starts with the same figure (its words go on there), and not when
-    the chunk is nothing but the figure (it already is the figure's own chunk: Pointers slide 39's rows of numbers)."""
+    the chunk is nothing but the figure (it already is the figure's own chunk: a slide whose picture holds rows of numbers)."""
     by_seq = {block.seq: block for block in section}
     for n in range(len(drafts) - 1):
         before, after = drafts[n], drafts[n + 1]

@@ -21,7 +21,7 @@ Two more things Docling does with an image, both seen on a deck of slides that a
   to the whole image, so a cut-out shows the slide, not a corner of it.
 
 A new picture goes after the last item on its page that stands above it. On slides, columns are common: there it
-goes after the last item above it in its own column, one that overlaps it sideways. DSA slide 14 has two code
+goes after the last item above it in its own column, one that overlaps it sideways. A slide with two code
 screenshots side by side, each under its label; by height alone both went after the second label.
 """
 import logging

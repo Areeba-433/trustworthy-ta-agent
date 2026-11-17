@@ -6,7 +6,7 @@ its arrows. So nothing is turned into text here. Instead:
   it read 27 such labels in the OOP book as headings and left 9 more as loose captions.
 - mark_figures() writes the figure's place into the blocks that belong to it, its caption and the words drawn
   inside it: extra["figure"] = {"page": 424, "box": [left, top, right, bottom]}, the box as fractions of the visible
-  page, measured from its top-left corner. Retrieval finds the caption ("FIGURE 9.7 Public and private derivation")
+  page, measured from its top-left corner. Retrieval finds the caption ("FIGURE 9.7 Two kinds of access")
   like any text, and through the chunk's block_seqs reaches this note.
 - render_figure() then cuts that box out of the stored original PDF as a PNG, in milliseconds: no image is stored.
   The answer step can give it to a vision-capable LLM, and the student's screen can show it as the source.
