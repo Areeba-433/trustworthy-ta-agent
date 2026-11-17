@@ -13,19 +13,16 @@ gives a slide's paragraphs their lines back ("Scope" points, one per line), join
 makes one block of a listing that a page break cut in two (not in slides: each slide's code is its own), and
 mark_figures() notes where each figure is, so an answer can show it.
 
-The title comes from the file's name (teachers upload a file, nothing more), as title_from_filename() makes it,
-without what a PDF's name keeps of the file it was made from: "Lecture 5.pptx.pdf" is "Lecture 5", not
-"Lecture 5.pptx". The title starts every chunk's heading path, so it is embedded with every chunk and shown with
-every answer's source."""
-import re
+The title comes from the file's name (teachers upload a file, nothing more), as document_title() makes it for
+every format: "Lecture 5.pptx.pdf" is "Lecture 5", not "Lecture 5.pptx". The title starts every chunk's heading
+path, so it is embedded with every chunk and shown with every answer's source."""
 from pathlib import Path
 
 from app.ingestion import messages
-from app.ingestion.cleaning.common import title_from_filename
 from app.ingestion.contract import ParsedDocument, PrecheckResult, ResourceMeta
 from app.ingestion.converter import PARSER, PARSER_VERSION, convert
 from app.ingestion.docling_blocks import to_blocks
-from app.ingestion.documents import parsed_document
+from app.ingestion.documents import document_title, parsed_document, picture_findings
 from app.ingestion.pdf_code import restore_code_lines
 from app.ingestion.pdf_exponents import mark_exponents
 from app.ingestion.pdf_figures import join_caption_lines, link_figure_labels, mark_figures
@@ -35,24 +32,8 @@ from app.ingestion.pdf_images import add_missed_pictures
 from app.ingestion.pdf_order import order_by_position
 from app.ingestion.pdf_slides import as_slides, is_slides, keep_line_breaks
 from app.ingestion.pdf_structure import join_page_listings, list_headings, name_chapters, set_heading_levels
-from app.ingestion.precheck import UNREADABLE_SHARE_MAX
 from app.ingestion.registry import register
 from app.ingestion.storage import Timer
-
-
-_MADE_FROM = re.compile(r"\.(pptx?|docx?|odp|odt|key|pages)$", re.IGNORECASE)   # "Lecture 5.pptx" (.pdf removed)
-_AUTOSAVED = re.compile(r"[\s_-]*[(\[]?\s*autosaved\s*[)\]]?[\s_-]*", re.IGNORECASE)   # PowerPoint's "(Autosaved)"
-_COPY_NUMBER = re.compile(r"\s*\(\d+\)$")                                         # "Lecture 5.pptx (1).pdf"
-
-
-def pdf_title(file_name: str) -> str:
-    """title_from_filename() of the name without the slides' or document's own extension, PowerPoint's
-    "(Autosaved)" and dots left at the end: "Vectors -Autosaved-.pptx.pdf" -> "Vectors",
-    "DOC-20260101-WA0001..pdf" -> "DOC 20260101 WA0001". A name with nothing else keeps its
-    usual title."""
-    stem = _COPY_NUMBER.sub("", Path(file_name).stem)
-    stem = _AUTOSAVED.sub(" ", _MADE_FROM.sub("", stem)).strip(" ._-")
-    return title_from_filename(stem + ".pdf") if stem else title_from_filename(file_name)
 
 
 @register("pdf", heavy=True)
@@ -62,7 +43,7 @@ def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
         conversion = convert(path, "pdf", meta.file_sha256)
     if conversion.from_cache:              # say so, or a cached run looks like a very fast Docling
         timer.seconds["docling_cache"] = timer.seconds.pop("docling")
-    title = pdf_title(meta.file_name)
+    title = document_title(meta.file_name, "pdf")
     with timer("chapter_tabs"):
         remove_chapter_tabs(conversion.document, path)
     with timer("contents"):
@@ -113,11 +94,9 @@ def page_findings(pre: PrecheckResult) -> tuple[list[str], list[str]]:
     Garbled text can lead to wrong answers: a problem. A picture-only page (often just the cover) holds nothing
     to search, and our scope is the text of digital files: a note. But a file with more of them than the pre-check
     lets a scan have (slides made of screenshots) is mostly unanswerable: a problem, so the teacher sees it at once.
+    The picture rule is the shared picture_findings(), so a deck gets the same status as a PDF or a PPTX.
     """
-    problems = [messages.hard_to_read(pre.garbage_pages)] if pre.garbage_pages else []
-    notes = []
-    if pre.scanned_pages and pre.pages_total and len(set(pre.scanned_pages)) / pre.pages_total > UNREADABLE_SHARE_MAX:
-        problems.append(messages.mostly_pictures("Pages", pre.scanned_pages, pre.pages_total))
-    elif pre.scanned_pages:
-        notes.append(messages.no_text_units("Pages", pre.scanned_pages))
+    problems, notes = picture_findings("Pages", pre.scanned_pages, pre.pages_total)
+    if pre.garbage_pages:
+        problems.insert(0, messages.hard_to_read(pre.garbage_pages))
     return problems, notes

@@ -49,3 +49,22 @@ def test_garbage_share():
 
 def test_title_from_filename():
     assert title_from_filename("L4_normalization_final(2).pdf") == "L4 normalization"
+
+@pytest.mark.parametrize("file_name, title", [
+    ("Lecture 5.pptx.pdf", "Lecture 5"),                                 # a PDF made from slides
+    ("Vectors -Autosaved-.pptx.pdf", "Vectors"),
+    ("Vectors (Autosaved).pptx.pdf", "Vectors"),
+    ("Vectors (Autosaved).pptx", "Vectors"),                             # PowerPoint's own file
+    ("Lecture-3 (Autosaved).docx", "Lecture 3"),                          # and Word's
+    ("AB12-Software Patching Assignment.docx.pdf", "AB12 Software Patching Assignment"),
+    ("Lecture 5.pptx (1).pdf", "Lecture 5"),
+    ("Lecture_9_Stack_applications(2).ppt.pdf", "Lecture 9 Stack applications"),
+    ("DOC-20260101-WA0001..pdf", "DOC 20260101 WA0001"),
+    ("Course_Presentation_Final.pdf", "Course Presentation"),
+    ("Lecture 9.1 Stacks.pdf", "Lecture 9.1 Stacks"),                   # a dot that is no extension stays
+    ("Autosaved.pptx.pdf", "Autosaved.pptx"),                           # nothing else in the name: kept
+    ("Autosaved.pptx", "Autosaved"),
+])
+def test_a_title_leaves_out_what_the_file_name_keeps_of_its_history(file_name, title):
+    """One rule for every format: the same deck gets the same title as .pptx and as .pdf."""
+    assert title_from_filename(file_name) == title

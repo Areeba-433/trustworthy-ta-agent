@@ -7,7 +7,10 @@ format-specific fixes to the blocks it gets back.
 
 Pictures are not read (no OCR), but none is lost: a picture's caption and the words inside it carry its
 figure_id ("fig7" for Docling's #/pictures/7), and a picture with no words of its own becomes a "[Figure]"
-block, unless it is icon-sized. The chunker copies those ids into the chunks (contract 2.1).
+block, unless it is icon-sized (is_icon()). The chunker copies those ids into the chunks (contract 2.1).
+
+table_text() and is_icon() are public so a loader that builds a table or weighs a picture itself (PowerPoint
+charts, picture-only slides) uses the same rules as to_blocks().
 """
 import re
 from collections.abc import Iterator
@@ -37,7 +40,8 @@ _VERBATIM: set[BlockKind] = {"table", "code", "formula"}    # never cleaned: spa
 _LAYERS = {ContentLayer.BODY, ContentLayer.NOTES}           # FURNITURE (headers, footers, page numbers) stays out
 _FORMATS: set[SourceType] = {"pdf", "docx", "pptx"}
 FIGURE_PLACEHOLDER = "[Figure]"     # the text of a picture that has no caption and no words inside it
-_ICON = 48                          # points (PDF) or pixels: a picture under this on both sides is an icon
+_ICON = 48                          # points, or pixels without a position: under this on both sides is an icon
+_EMU_PER_POINT = 12700              # Docling gives PowerPoint positions in EMU, PowerPoint's own unit
 _BULLET = re.compile(r"^[·•▪◦‣●○■□►]\s*")    # a list item's own bullet, left in its text
 
 
@@ -52,7 +56,7 @@ def to_blocks(doc: DoclingDocument, source_type: SourceType, title: str) -> list
     caption_of = {ref.cref: picture for picture in doc.pictures for ref in picture.captions}
     for item, _ in doc.iterate_items(traverse_pictures=True, included_content_layers=_LAYERS):
         if isinstance(item, PictureItem):
-            if _needs_placeholder(item, doc):
+            if _needs_placeholder(item, doc, source_type):
                 loc = previous = _location(item, source_type, previous)
                 blocks.append(Block(
                     seq=len(blocks), kind="figure", text=FIGURE_PLACEHOLDER,
@@ -90,7 +94,7 @@ def figure_name(picture: PictureItem) -> str:
     return "fig" + picture.self_ref.rsplit("/", 1)[-1]
 
 
-def _needs_placeholder(picture: PictureItem, doc: DoclingDocument) -> bool:
+def _needs_placeholder(picture: PictureItem, doc: DoclingDocument, source_type: SourceType) -> bool:
     """True for a picture that would otherwise leave no trace: no caption, no words inside, not an icon."""
     words = [ref.resolve(doc) for ref in picture.captions]
     words += [child for child, _ in doc.iterate_items(root=picture, traverse_pictures=True,
@@ -99,11 +103,15 @@ def _needs_placeholder(picture: PictureItem, doc: DoclingDocument) -> bool:
         if (isinstance(item, DocItem) and item.label in _KIND_BY_LABEL and item.content_layer in _LAYERS
                 and _text(item, _kind(item, list(_ancestors(item, doc))), doc)):
             return False
-    return not _icon_sized(picture)
+    return not is_icon(picture, source_type)
 
 
-def _icon_sized(picture: PictureItem) -> bool:
-    sizes = [(abs(p.bbox.r - p.bbox.l), abs(p.bbox.t - p.bbox.b)) for p in picture.prov]
+def is_icon(picture: PictureItem, source_type: SourceType) -> bool:
+    """True for a picture shown under 48 points on both sides (a logo, an arrow, a bullet picture). Docling gives
+    PowerPoint positions in EMU (12,700 per point), so on slides the size is turned into points first; without it,
+    every slide picture was too big to be an icon. A picture without a position is measured by its pixels."""
+    scale = 1 / _EMU_PER_POINT if source_type == "pptx" else 1
+    sizes = [(abs(p.bbox.r - p.bbox.l) * scale, abs(p.bbox.t - p.bbox.b) * scale) for p in picture.prov]
     if not sizes and picture.image is not None:
         sizes = [(picture.image.size.width, picture.image.size.height)]
     return bool(sizes) and all(width < _ICON and height < _ICON for width, height in sizes)
@@ -127,7 +135,7 @@ def _kind(item: DocItem, ancestors: list[NodeItem]) -> BlockKind:
 
 def _text(item: DocItem, kind: BlockKind, doc: DoclingDocument) -> str:
     if isinstance(item, TableItem):
-        return _table_text(item, doc)
+        return table_text(item, doc)
     raw: str = getattr(item, "text", "") or ""
     if kind == "formula" and not raw.strip():
         raw = getattr(item, "orig", "") or ""     # Docling leaves a formula's text to its formula model, off for us
@@ -141,7 +149,7 @@ def _text(item: DocItem, kind: BlockKind, doc: DoclingDocument) -> str:
     return text
 
 
-def _table_text(table: TableItem, doc: DoclingDocument) -> str:
+def table_text(table: TableItem, doc: DoclingDocument) -> str:
     """The table as Markdown, with its caption on top, as Docling writes it, with two changes:
     - a row across the whole table (a section title like "Mutating Sequence Operations") is written once, in its
       first column: Markdown cannot join cells, so Docling would repeat it in every column;

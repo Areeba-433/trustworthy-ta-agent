@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from app.ingestion import messages
 from app.ingestion.cleaning.common import title_from_filename
 from app.ingestion.contract import Block, ParsedDocument, QualityReport, ResourceMeta, SourceType
+from app.ingestion.precheck import UNREADABLE_SHARE_MAX
 
 
 class FileRefused(Exception):
@@ -14,11 +15,30 @@ class FileRefused(Exception):
         self.reason = reason
 
 
+def document_title(file_name: str, source_type: SourceType) -> str:
+    """The title every heading path starts with, the same whether the file loads or fails. Code and text keep
+    their file name, so stack.cpp and stack.h stay apart; every other file gets title_from_filename()."""
+    return file_name if source_type in ("code", "text") else title_from_filename(file_name)
+
+
+def picture_findings(unit_name: str, units: Sequence[int], total: int) -> tuple[list[str], list[str]]:
+    """Pages or slides with a picture and no text, as (problems, notes), one rule for every format: a few of them
+    (a cover, a diagram slide) are a note, so the status stays "ok"; more than the pre-check lets a scan have
+    (UNREADABLE_SHARE_MAX, 1 in 5) make the file mostly unanswerable, a problem the teacher sees at once.
+    unit_name is plural, like "Pages" or "Slides"."""
+    units = sorted(set(units))
+    if not units:
+        return [], []
+    if total and len(units) / total > UNREADABLE_SHARE_MAX:
+        return [messages.mostly_pictures(unit_name, units, total)], []
+    return [], [messages.no_text_units(unit_name, units)]
+
+
 def failed_document(meta: ResourceMeta, source_type: SourceType, reason: str) -> ParsedDocument:
     return ParsedDocument(
         resource_id=meta.resource_id, course_id=meta.course_id, file_name=meta.file_name,
         file_sha256=meta.file_sha256, source_type=source_type,
-        title=title_from_filename(meta.file_name), parser="none", parser_version="-", blocks=[],
+        title=document_title(meta.file_name, source_type), parser="none", parser_version="-", blocks=[],
         quality=QualityReport(status="failed", warnings=[reason], units_total=0, chars_total=0),
     )
 

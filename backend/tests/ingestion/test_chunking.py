@@ -42,6 +42,21 @@ def _chunk(doc: ParsedDocument, **options: Any) -> list[Draft]:
 
 # ================================================================ sections and packing
 
+def test_a_file_of_headings_only_gets_one_chunk_of_its_headings():
+    """An outline: headings add no text, so it got no chunk and its upload failed. Its headings are its content,
+    one per line, under the file's title (the rule the DOCX chunker had on its own, now for every format)."""
+    drafts = _chunk(_doc({"kind": "heading", "text": "Week 1: Arrays", "path": ["Week 1: Arrays"]},
+                         {"kind": "heading", "text": "Week 2: Lists", "path": ["Week 2: Lists"], "loc": {"page": 2}}))
+    assert [(d.text, d.heading_path, d.kinds, d.block_seqs) for d in drafts] == [
+        ("Week 1: Arrays\nWeek 2: Lists", [T], ["heading"], [0, 1])]
+    assert (drafts[0].loc.page, drafts[0].loc.page_end) == (1, 2)
+
+
+def test_a_file_with_text_besides_its_headings_is_chunked_as_before():
+    drafts = _chunk(_doc({"kind": "heading", "text": "Lists", "path": ["Lists"]}, {"text": "A list.", "path": ["Lists"]}))
+    assert [(d.text, d.heading_path) for d in drafts] == [("A list.", [T, "Lists"])]
+
+
 def test_small_blocks_of_one_section_share_a_chunk_and_headings_add_no_text():
     drafts = _chunk(_doc(
         {"kind": "heading", "text": "Lists", "path": ["Lists"]},

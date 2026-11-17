@@ -10,7 +10,7 @@ from docling_core.types.doc import (BoundingBox, ContentLayer, DocItemLabel, Doc
                                     ProvenanceItem, TableCell, TableData)
 
 from app.ingestion.contract import Block, Location, ParsedDocument, QualityReport, SourceType
-from app.ingestion.docling_blocks import to_blocks
+from app.ingestion.docling_blocks import is_icon, table_text, to_blocks
 
 TITLE = "DSA notes"
 
@@ -175,6 +175,37 @@ def test_a_formula_keeps_the_words_docling_read_there():
 def test_formats_docling_does_not_read_are_refused():
     with pytest.raises(ValueError):
         to_blocks(DoclingDocument(name="t"), "audio", TITLE)
+
+
+@pytest.mark.parametrize("side_pt, figure", [(40, False), (200, True)], ids=["icon", "picture"])
+def test_on_a_slide_an_icon_is_measured_in_points_not_emu(side_pt, figure):
+    """Docling gives PowerPoint positions in EMU (12,700 per point): a 40-point logo is 508,000 EMU wide, so by
+    the old rule no slide picture was ever an icon, and every logo and arrow became a "[Figure]"."""
+    doc = DoclingDocument(name="deck")
+    side = side_pt * 12700
+    picture = doc.add_picture(prov=ProvenanceItem(page_no=1, bbox=BoundingBox(l=0, t=0, r=side, b=side),
+                                                  charspan=(0, 0)))
+    assert is_icon(picture, "pptx") is not figure
+    assert [b.text for b in to_blocks(doc, "pptx", TITLE)] == (["[Figure]"] if figure else [])
+
+
+def test_a_pdf_picture_is_measured_in_points_as_before():
+    doc = DoclingDocument(name="book")
+    small = doc.add_picture(prov=ProvenanceItem(page_no=1, bbox=BoundingBox(l=0, t=0, r=40, b=40), charspan=(0, 0)))
+    big = doc.add_picture(prov=ProvenanceItem(page_no=1, bbox=BoundingBox(l=0, t=0, r=200, b=200), charspan=(0, 0)))
+    assert (is_icon(small, "pdf"), is_icon(big, "pdf")) == (True, False)
+
+
+def test_table_text_is_the_text_to_blocks_gives_a_table():
+    """Public, so a loader that makes a table itself (a PowerPoint chart's data) writes it the same way."""
+    doc = DoclingDocument(name="t")
+    cells = [TableCell(text=t, start_row_offset_idx=r, end_row_offset_idx=r + 1, start_col_offset_idx=c,
+                       end_col_offset_idx=c + 1, column_header=r == 0)
+             for r, row in enumerate([["Op", "Cost"], ["a || b", "O(1)"]]) for c, t in enumerate(row)]
+    table = doc.add_table(data=TableData(num_rows=2, num_cols=2, table_cells=cells), prov=_prov(1))
+    text = table_text(table, doc)
+    assert "a \\|\\| b" in text and "&#124;" not in text
+    assert [b.text for b in _blocks(doc) if b.kind == "table"] == [text]
 
 
 # ================================================================ part 2: real Docling on generated files

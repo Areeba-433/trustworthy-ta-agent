@@ -82,9 +82,22 @@ def garbage_share(text: str) -> float:
     return (len(_BAD.findall(text)) + len(_MOJIBAKE.findall(text))) / visible
 
 
+_MADE_FROM = re.compile(r"\.(pptx?|docx?|odp|odt|key|pages)$", re.IGNORECASE)   # "Lecture 5.pptx" of a .pptx.pdf
+_AUTOSAVED = re.compile(r"[\s_-]*[(\[]?\s*autosaved\s*[)\]]?[\s_-]*", re.IGNORECASE)  # PowerPoint's "(Autosaved)"
+_COPY_NUMBER = re.compile(r"\s*\(\d+\)$")                                        # "notes (2)", a second download
+
+
 def title_from_filename(file_name: str) -> str:
-    """'L4_normalization_final(2).pdf' -> 'L4 normalization'"""
-    stem = re.sub(r"\s*\(\d+\)$", "", Path(file_name).stem)
+    """The title of a file, for every format: its name without the copy number a second download adds, the
+    extension of the file a PDF was made from, PowerPoint's "(Autosaved)", dots left at the end, _ and -, and
+    the words final, copy, new and v2.
+    'L4_normalization_final(2).pdf' -> 'L4 normalization'
+    'Vectors (Autosaved).pptx' -> 'Vectors'; 'Lecture 5.pptx.pdf' -> 'Lecture 5'; 'DOC-20260101-WA0001..pdf' ->
+    'DOC 20260101 WA0001'. A name with nothing else keeps its title: 'Autosaved.pptx' -> 'Autosaved'."""
+    original = Path(file_name).stem
+    stem = _COPY_NUMBER.sub("", original)
+    stem = _AUTOSAVED.sub(" ", _MADE_FROM.sub("", stem)).strip(" ._-")
+    stem = _COPY_NUMBER.sub("", stem) or _COPY_NUMBER.sub("", original)        # "Lecture(2).ppt" of a .ppt.pdf
     stem = re.sub(r"[_\-]+", " ", stem)
     stem = re.sub(r"\b(final|copy|new|v\d+)\b", "", stem, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", stem).strip() or "Untitled"

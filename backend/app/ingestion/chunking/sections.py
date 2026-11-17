@@ -19,7 +19,9 @@ picture. Which side a figure belongs to differs from document to document (and i
 With name_pieces=True (PDF), the later pieces of a listing cut in pieces start with a line naming the listing,
 "// shapes.cpp (continued)", taken from the listing's own first line, so a piece from the middle still says which
 program it is part of. A listing whose first line names no file gets no such line.
-Headings add no text: the heading path already travels with every chunk and is embedded with it.
+Headings add no text: the heading path already travels with every chunk and is embedded with it. A file with
+nothing but headings (an outline, a list of topics) would then get no chunk at all, and its upload would fail: there
+the headings are the content, so they become one chunk, a heading per line, under the file's title.
 Every chunk lists the figures of its blocks (figure_ids), so a figure is never lost between blocks and chunks.
 """
 import re
@@ -65,7 +67,20 @@ def chunk_sections(doc: ParsedDocument, *, section_key: Callable[[Block], Hashab
         if share_figures:
             _share_figures(section_drafts, section, count)
         drafts.extend(section_drafts)
-    return drafts
+    return drafts or _headings_only(doc, target, count)
+
+
+def _headings_only(doc: ParsedDocument, target: int, count: TokenCounter) -> list[Draft]:
+    """The chunk of a file that has headings and nothing else: its headings, one per line, cut like any long block
+    when they do not fit. No headings: no chunk."""
+    headings = [b for b in doc.blocks if b.kind == "heading"]
+    if not headings:
+        return []
+    text = "\n".join(b.text for b in headings)
+    pieces = [text] if count(text) <= MAX_CHUNK_TOKENS else split_to_fit(text, "paragraph", target, count)
+    loc = merge_locations([b.loc for b in headings])
+    return [Draft(text=piece, heading_path=[doc.title], loc=loc, kinds=["heading"],
+                  block_seqs=[b.seq for b in headings]) for piece in pieces]
 
 
 def _sections(blocks: list[Block], key: Callable[[Block], Hashable]) -> Iterator[list[Block]]:
