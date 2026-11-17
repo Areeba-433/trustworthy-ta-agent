@@ -373,6 +373,11 @@ def test_a_file_of_headings_only_gets_one_chunk_of_its_headings(make_docx, data_
     assert chunk.text == "Week 1: Arrays\nWeek 2: Linked Lists\nWeek 3: Stacks" and chunk.kinds == ["heading"]
 
 
+def test_stage_times_are_recorded_for_ingest_check(make_docx, data_dir, word_tokens):
+    seconds = process(make_docx(build=_lecture), "w23", "c1").parsed.quality.seconds_taken
+    assert {"docx_convert", "docx_word_facts", "docx_blocks", "docx_flowcharts", "dispatch_load"} <= set(seconds)
+
+
 # ---------------------------------------------------------------------------------------------------
 # PART C: flowcharts drawn with Word shapes (docx_flowchart.py): boxes, arrows, labels -> one text block
 # ---------------------------------------------------------------------------------------------------

@@ -1,3 +1,21 @@
+"""Word files (.docx): the shared Docling path, plus fixes read from the Word file itself. Owner: Areeba.
+
+    file -> convert() (Docling, cached) -> to_blocks() -> the DOCX rules below -> parsed_document()
+
+Docling reads the text; python-docx reads the facts Docling misses (styles, fonts, hidden runs, content
+controls), and docx_flowchart.py reads shapes and arrows. The rules run in this order:
+
+ 1. _drop_word_extras  the table of contents and the cover page are left out
+ 2. _drop_hidden_text  text set to Hidden in Word is left out
+ 3. _mark_code         runs of monospace paragraphs become one code block, with Word's exact spacing
+ 4. _join_scripts      superscript and subscript are written out (O(n^2), H_2O) in one block
+ 5. _mark_captions     Caption-style paragraphs become captions and take the id of the picture next to them
+ 6. _promote_titles    in a file without heading styles, bold title lines become headings
+ 7. _add_flowcharts    a flowchart drawn with shapes becomes one figure_text block listing its arrows
+
+Pictures add no text of their own (no OCR): to_blocks() keeps each one as a "[Figure]" block with its figure_id.
+Stage times go into quality.seconds_taken (docx_*), next to the dispatcher's.
+"""
 import logging
 import re
 from collections import Counter, defaultdict, deque
@@ -17,6 +35,7 @@ from app.ingestion.docling_blocks import to_blocks
 from app.ingestion.documents import parsed_document
 from app.ingestion.loaders.docx_flowchart import Flowchart, read_flowcharts
 from app.ingestion.registry import register
+from app.ingestion.storage import Timer
 
 logger = logging.getLogger("tta.ingestion")
 
@@ -519,20 +538,27 @@ def _add_flowcharts(blocks: list[Block], charts: list[Flowchart],
 
 @register("docx", heavy=True)
 def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
+    timer = Timer()
     title = title_from_filename(meta.file_name)
-    conversion = convert(path, "docx", meta.file_sha256)
-    facts = _word_facts(path)
-    blocks = to_blocks(conversion.document, "docx", title)
-    blocks = _drop_word_extras(blocks, facts.skipped)
-    blocks = _drop_hidden_text(blocks, facts.visible)
-    blocks = _mark_code(blocks, facts.code)
-    blocks = _join_scripts(blocks, facts.scripts)
-    blocks = _mark_captions(blocks, facts.captions)
-    blocks = _promote_titles(blocks, facts.titles, title)
-    charts = _flowcharts(path)
-    if charts:
-        blocks, _ = _add_flowcharts(blocks, charts, _shape_text_refs(conversion.document))
-    return parsed_document(
+    with timer("docx_convert"):                 # Docling, or its cached result
+        conversion = convert(path, "docx", meta.file_sha256)
+    with timer("docx_word_facts"):              # styles, fonts, hidden runs, read with python-docx
+        facts = _word_facts(path)
+    with timer("docx_blocks"):
+        blocks = to_blocks(conversion.document, "docx", title)
+        blocks = _drop_word_extras(blocks, facts.skipped)
+        blocks = _drop_hidden_text(blocks, facts.visible)
+        blocks = _mark_code(blocks, facts.code)
+        blocks = _join_scripts(blocks, facts.scripts)
+        blocks = _mark_captions(blocks, facts.captions)
+        blocks = _promote_titles(blocks, facts.titles, title)
+    with timer("docx_flowcharts"):
+        charts = _flowcharts(path)
+        if charts:
+            blocks, _ = _add_flowcharts(blocks, charts, _shape_text_refs(conversion.document))
+    doc = parsed_document(
         meta, title=title, blocks=blocks, parser=PARSER, parser_version=PARSER_VERSION,
         units_total=len(blocks), problems=conversion.problems,
     )
+    doc.quality.seconds_taken.update(timer.seconds)
+    return doc
