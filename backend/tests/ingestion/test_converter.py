@@ -1,7 +1,8 @@
 """converter.py: one Docling converter per format, our PDF settings, and Docling's status in our words.
 
 Part 1 needs no files and no AI models. Part 2 runs real Docling on Word and PowerPoint files made here (seconds).
-Part 3 runs Docling's PDF models, which download the first time, so it runs only when asked.
+Part 3 checks the cache of Docling results. Part 4 runs Docling's PDF models, which download the first time,
+so it runs only when asked.
 """
 import os
 import shutil
@@ -25,7 +26,7 @@ from app.ingestion.storage import file_sha256
 def test_pdf_settings_match_the_plan():
     options = converter.pdf_options()
     assert options.do_ocr is False
-    assert options.do_table_structure and options.table_structure_options.mode == TableFormerMode.FAST
+    assert options.do_table_structure and options.table_structure_options.mode == TableFormerMode.ACCURATE
     assert options.heading_hierarchy_options.enabled
     assert not (options.do_code_enrichment or options.do_formula_enrichment)
     assert not (options.generate_page_images or options.generate_picture_images)
@@ -118,6 +119,7 @@ def test_slides_renamed_to_docx_are_refused_as_a_mismatch(tmp_path):
         converter.convert(renamed, "docx")
     assert refused.value.reason == messages.TYPE_MISMATCH
 
+
 # ================================================================ part 3: the cache of Docling results
 
 def _docling_must_not_run(monkeypatch):
@@ -160,10 +162,46 @@ def test_a_damaged_cache_file_is_read_again_and_replaced(tmp_path, data_dir):
 
 def test_the_cache_name_changes_when_our_settings_change(monkeypatch, data_dir):
     before = converter.cache_file("a" * 64, "pdf")
-    monkeypatch.setattr(converter, "PDF_TIMEOUT_SECONDS", 60.0)
+    ours = converter.pdf_options
+
+    def sharper():
+        chosen = ours()
+        chosen.images_scale = 3.0
+        return chosen
+
+    monkeypatch.setattr(converter, "pdf_options", sharper)
     assert converter.cache_file("a" * 64, "pdf") != before
     assert converter.cache_file("a" * 64, "docx") != before
     assert converter.cache_file("a" * 64, "docx") != converter.cache_file("a" * 64, "pptx")
+
+
+def test_the_time_limit_is_not_part_of_the_cache_name(monkeypatch, data_dir):
+    """Only complete results are kept, so the time limit never changes a kept result, and changing the limit must
+    not throw every kept result away."""
+    before = converter.cache_file("a" * 64, "pdf")
+    monkeypatch.setattr(converter, "PDF_TIMEOUT_SECONDS", 60.0)
+    assert converter.cache_file("a" * 64, "pdf") == before
+
+
+def test_the_cache_name_changes_with_the_table_mode(monkeypatch, data_dir):
+    """The mode sits in an option Docling types as a base class. It was once left out of the name, and a FAST
+    result was reused after the switch to ACCURATE."""
+    ours = converter.pdf_options
+    names = set()
+    for mode in (TableFormerMode.FAST, TableFormerMode.ACCURATE):
+        def options(mode=mode):
+            chosen = ours()
+            chosen.table_structure_options.mode = mode
+            return chosen
+        monkeypatch.setattr(converter, "pdf_options", options)
+        names.add(converter.cache_file("a" * 64, "pdf"))
+    assert len(names) == 2
+
+
+def test_the_cache_name_changes_with_the_pdf_reader(monkeypatch, data_dir):
+    before = converter.cache_file("a" * 64, "pdf")
+    monkeypatch.setattr(converter, "pdf_backend", lambda: type("AnotherReader", (), {}))
+    assert converter.cache_file("a" * 64, "pdf") != before
 
 
 def test_sets_are_sorted_before_hashing():
@@ -177,7 +215,7 @@ def test_the_cache_name_is_the_same_in_every_run():
     names = {subprocess.run([sys.executable, "-c", code], cwd=backend, capture_output=True, text=True, check=True,
                             env={**os.environ, "PYTHONHASHSEED": seed}).stdout.strip() for seed in ("0", "3")}
     assert len(names) == 1 and len(names.pop()) == 12
-    
+
 
 # ================================================================ part 4: real Docling PDF models (on request)
 
@@ -190,3 +228,17 @@ def test_a_real_pdf_is_read_page_by_page(digital_pdf):
     assert len(document.pages) == 3
     assert "linked list" in " ".join(t.text for t in document.texts)
     assert {t.prov[0].page_no for t in document.texts if t.prov} == {1, 2, 3}
+
+
+@pytest.mark.skipif(os.getenv("DOCLING_PDF_TEST") != "1",
+                    reason="PDF models test: set DOCLING_PDF_TEST=1 (downloads Docling's models the first time)")
+def test_a_cmyk_picture_does_not_end_the_process(picture_pdf):
+    """docling-parse's own page drawing ends the whole process on this picture, like book page 94 (pdf_backend.py).
+    Run in a process of its own, so that a crash fails this test instead of ending pytest."""
+    code = ("import sys; from pathlib import Path; from app.ingestion import converter; "
+            "c = converter.convert(Path(sys.argv[1]), 'pdf'); print(len(c.document.pictures), len(c.problems))")
+    backend = Path(__file__).resolve().parents[2]
+    run = subprocess.run([sys.executable, "-c", code, str(picture_pdf("DeviceCMYK"))], cwd=backend,
+                         capture_output=True, text=True, timeout=900)
+    assert run.returncode == 0, run.stderr[-3000:]
+    assert run.stdout.strip().splitlines()[-1] == "1 0"                        # one picture, no problems

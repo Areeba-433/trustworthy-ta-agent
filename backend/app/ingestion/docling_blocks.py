@@ -9,6 +9,7 @@ Pictures are not read (no OCR), but none is lost: a picture's caption and the wo
 figure_id ("fig7" for Docling's #/pictures/7), and a picture with no words of its own becomes a "[Figure]"
 block, unless it is icon-sized. The chunker copies those ids into the chunks (contract 2.1).
 """
+import re
 from collections.abc import Iterator
 
 from docling_core.types.doc import (ContentLayer, DocItem, DocItemLabel, DoclingDocument, GroupItem, GroupLabel,
@@ -37,6 +38,7 @@ _LAYERS = {ContentLayer.BODY, ContentLayer.NOTES}           # FURNITURE (headers
 _FORMATS: set[SourceType] = {"pdf", "docx", "pptx"}
 FIGURE_PLACEHOLDER = "[Figure]"     # the text of a picture that has no caption and no words inside it
 _ICON = 48                          # points (PDF) or pixels: a picture under this on both sides is an icon
+_BULLET = re.compile(r"^[·•▪◦‣●○■□►]\s*")    # a list item's own bullet, left in its text
 
 
 def to_blocks(doc: DoclingDocument, source_type: SourceType, title: str) -> list[Block]:
@@ -46,6 +48,7 @@ def to_blocks(doc: DoclingDocument, source_type: SourceType, title: str) -> list
     blocks: list[Block] = []
     headings: list[tuple[int, str]] = []         # (depth, text) of the headings above the current item
     previous = Location()
+    table_captions = {ref.cref for table in doc.tables for ref in table.captions}   # already in the table's text
     caption_of = {ref.cref: picture for picture in doc.pictures for ref in picture.captions}
     for item, _ in doc.iterate_items(traverse_pictures=True, included_content_layers=_LAYERS):
         if isinstance(item, PictureItem):
@@ -57,7 +60,7 @@ def to_blocks(doc: DoclingDocument, source_type: SourceType, title: str) -> list
                     figure_id=figure_name(item), extra={"ref": item.self_ref},
                 ))
             continue
-        if not isinstance(item, DocItem) or item.label not in _KIND_BY_LABEL:
+        if not isinstance(item, DocItem) or item.label not in _KIND_BY_LABEL or item.self_ref in table_captions:
             continue
         ancestors = list(_ancestors(item, doc))
         if any(isinstance(a, GroupItem) and a.label == GroupLabel.COMMENT_SECTION for a in ancestors):
@@ -124,15 +127,31 @@ def _kind(item: DocItem, ancestors: list[NodeItem]) -> BlockKind:
 
 def _text(item: DocItem, kind: BlockKind, doc: DoclingDocument) -> str:
     if isinstance(item, TableItem):
-        return item.export_to_markdown(doc=doc).strip()
+        return _table_text(item, doc)
     raw: str = getattr(item, "text", "") or ""
+    if kind == "formula" and not raw.strip():
+        raw = getattr(item, "orig", "") or ""     # Docling leaves a formula's text to its formula model, off for us
     if kind in _VERBATIM:
         return raw.strip("\n") if raw.strip() else ""             # keep indentation and line breaks
     text = clean_text(raw)
     if text and kind == "list_item" and isinstance(item, ListItem):
+        text = _BULLET.sub("", text) or text         # a bullet Docling left in the text: "·Pointers are..."
         marker = item.marker if item.enumerated and item.marker else "-"
         text = f"{marker} {text}"
     return text
+
+
+def _table_text(table: TableItem, doc: DoclingDocument) -> str:
+    """The table as Markdown, with its caption on top, as Docling writes it, with two changes:
+    - a row across the whole table (a section title like "Mutating Sequence Operations") is written once, in its
+      first column: Markdown cannot join cells, so Docling would repeat it in every column;
+    - a | inside a cell is written \\| (Markdown's own way) instead of the HTML code &#124;, so "||" stays readable.
+    Header cells that span columns are still repeated: there the words belong to every column below them."""
+    cells = [cell.model_copy(update={"end_col_offset_idx": cell.start_col_offset_idx + 1, "col_span": 1})
+             if cell.end_col_offset_idx - cell.start_col_offset_idx > 1 and not cell.column_header else cell
+             for cell in table.data.table_cells]
+    once = table.model_copy(update={"data": table.data.model_copy(update={"table_cells": cells})})
+    return once.export_to_markdown(doc=doc).replace("&#124;", "\\|").strip()
 
 
 def _location(item: DocItem, source_type: SourceType, previous: Location) -> Location:

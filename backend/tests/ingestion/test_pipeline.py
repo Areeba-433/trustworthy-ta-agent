@@ -1,5 +1,4 @@
-"""process(): file -> parsed.json -> chunks.json.
-The PDF loader is still a stub here, and count_tokens() counts words (word_tokens)."""
+"""process(): file -> parsed.json -> chunks.json. PDFs use the Docling stand-in from conftest; tokens are words."""
 from app.ingestion import messages
 from app.ingestion.chunking import registry as chunker_registry
 from app.ingestion.contract import ChunkedDocument
@@ -11,7 +10,7 @@ def test_a_file_goes_all_the_way_to_chunks_json(digital_pdf, data_dir, word_toke
     saved = ChunkedDocument.model_validate_json((data_dir / "r1" / "chunks.json").read_text(encoding="utf-8"))
     assert (result.status, result.warnings) == ("ok", [])
     assert saved == result.chunked
-    assert saved.chunker == "pdf-sections/1" and saved.chunks[0].chunk_id == "r1:0"
+    assert saved.chunker == "pdf-sections/3" and saved.chunks[0].chunk_id == "r1:0"
     assert (data_dir / "r1" / "parsed.json").exists()
 
 

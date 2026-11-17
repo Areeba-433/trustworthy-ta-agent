@@ -1,11 +1,123 @@
-"""Placeholder. Owner: Minahil replaces the body of load(), keeps the @register line."""
+"""PDF loader (owner: Minahil). Docling reads the book. On Docling's result: remove_chapter_tabs() takes the decoration
+on the page edges out, remove_contents_and_index() the contents and index pages, add_missed_pictures() adds a
+picture for each image of the PDF that Docling left out entirely (a code screenshot it took for text),
+link_figure_labels() gives a picture the "FIGURE 2.3" label Docling read as a heading or left loose,
+join_caption_lines() gives a caption back its description line, and split_long_headings() cuts a heading Docling
+made of a whole region back to the heading. list_headings() makes list items of the bullet points Docling took for
+headings, set_heading_levels() puts each heading under the bigger ones by its size, and name_chapters() calls each
+chapter's heading after the PDF's bookmark ("Chapter 9: Inheritance"). Then to_blocks() makes blocks,
+restore_code_lines() gives code listings their lines back and tells code from sentences by font, mark_exponents()
+keeps the exponent of a power of ten ("10^308"), order_by_position() puts what stands higher on a page first,
+as_slides() keeps one heading per slide when the PDF is slides (every page wider than tall) and keep_line_breaks()
+gives a slide's paragraphs their lines back ("Scope" points, one per line), join_page_listings()
+makes one block of a listing that a page break cut in two (not in slides: each slide's code is its own), and
+mark_figures() notes where each figure is, so an answer can show it.
+
+The title comes from the file's name (teachers upload a file, nothing more), as title_from_filename() makes it,
+without what a PDF's name keeps of the file it was made from: "Lecture 5.pptx.pdf" is "Lecture 5", not
+"Lecture 5.pptx". The title starts every chunk's heading path, so it is embedded with every chunk and shown with
+every answer's source."""
+import re
 from pathlib import Path
 
-from app.ingestion.contract import ParsedDocument, ResourceMeta
-from app.ingestion.loaders._stub import stub_document
+from app.ingestion import messages
+from app.ingestion.cleaning.common import title_from_filename
+from app.ingestion.contract import ParsedDocument, PrecheckResult, ResourceMeta
+from app.ingestion.converter import PARSER, PARSER_VERSION, convert
+from app.ingestion.docling_blocks import to_blocks
+from app.ingestion.documents import parsed_document
+from app.ingestion.pdf_code import restore_code_lines
+from app.ingestion.pdf_exponents import mark_exponents
+from app.ingestion.pdf_figures import join_caption_lines, link_figure_labels, mark_figures
+from app.ingestion.pdf_furniture import remove_chapter_tabs, remove_contents_and_index
+from app.ingestion.pdf_headings import split_long_headings
+from app.ingestion.pdf_images import add_missed_pictures
+from app.ingestion.pdf_order import order_by_position
+from app.ingestion.pdf_slides import as_slides, is_slides, keep_line_breaks
+from app.ingestion.pdf_structure import join_page_listings, list_headings, name_chapters, set_heading_levels
+from app.ingestion.precheck import UNREADABLE_SHARE_MAX
 from app.ingestion.registry import register
+from app.ingestion.storage import Timer
+
+
+_MADE_FROM = re.compile(r"\.(pptx?|docx?|odp|odt|key|pages)$", re.IGNORECASE)   # "Lecture 5.pptx" (.pdf removed)
+_AUTOSAVED = re.compile(r"[\s_-]*[(\[]?\s*autosaved\s*[)\]]?[\s_-]*", re.IGNORECASE)   # PowerPoint's "(Autosaved)"
+_COPY_NUMBER = re.compile(r"\s*\(\d+\)$")                                         # "Lecture 5.pptx (1).pdf"
+
+
+def pdf_title(file_name: str) -> str:
+    """title_from_filename() of the name without the slides' or document's own extension, PowerPoint's
+    "(Autosaved)" and dots left at the end: "Vectors -Autosaved-.pptx.pdf" -> "Vectors",
+    "DOC-20260101-WA0001..pdf" -> "DOC 20260101 WA0001". A name with nothing else keeps its
+    usual title."""
+    stem = _COPY_NUMBER.sub("", Path(file_name).stem)
+    stem = _AUTOSAVED.sub(" ", _MADE_FROM.sub("", stem)).strip(" ._-")
+    return title_from_filename(stem + ".pdf") if stem else title_from_filename(file_name)
 
 
 @register("pdf", heavy=True)
 def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
-    return stub_document(meta, kind="paragraph")
+    timer = Timer()
+    with timer("docling"):
+        conversion = convert(path, "pdf", meta.file_sha256)
+    if conversion.from_cache:              # say so, or a cached run looks like a very fast Docling
+        timer.seconds["docling_cache"] = timer.seconds.pop("docling")
+    title = pdf_title(meta.file_name)
+    with timer("chapter_tabs"):
+        remove_chapter_tabs(conversion.document, path)
+    with timer("contents"):
+        remove_contents_and_index(conversion.document)
+    with timer("missed_pictures"):
+        add_missed_pictures(conversion.document, path)
+    with timer("figure_labels"):
+        link_figure_labels(conversion.document)
+    with timer("captions"):
+        join_caption_lines(conversion.document)
+    with timer("headings"):
+        split_long_headings(conversion.document, path)
+    with timer("list_headings"):
+        list_headings(conversion.document)
+    with timer("heading_levels"):
+        set_heading_levels(conversion.document, path)
+    with timer("chapters"):
+        name_chapters(conversion.document, path)
+    with timer("blocks"):
+        blocks = to_blocks(conversion.document, "pdf", title)
+    with timer("code_lines"):
+        blocks = restore_code_lines(blocks, conversion.document, path)
+    with timer("exponents"):
+        blocks = mark_exponents(blocks, path)
+    with timer("order"):
+        blocks = order_by_position(blocks, conversion.document)
+    with timer("slides"):
+        blocks = as_slides(blocks, conversion.document)
+    with timer("line_breaks"):
+        blocks = keep_line_breaks(blocks, conversion.document, path)
+    with timer("page_listings"):
+        if not is_slides(conversion.document):            # a slide's code is its own: no page break cut it
+            blocks = join_page_listings(blocks)
+    with timer("figures"):
+        blocks = mark_figures(blocks, conversion.document)
+    problems, notes = page_findings(meta.precheck)
+    doc = parsed_document(
+        meta, title=title, blocks=blocks, parser=PARSER, parser_version=PARSER_VERSION,
+        units_total=meta.precheck.pages_total, problems=[*conversion.problems, *problems], notes=notes,
+    )
+    doc.quality.seconds_taken.update(timer.seconds)
+    return doc
+
+
+def page_findings(pre: PrecheckResult) -> tuple[list[str], list[str]]:
+    """What the pre-check found on single pages, as (problems, notes).
+
+    Garbled text can lead to wrong answers: a problem. A picture-only page (often just the cover) holds nothing
+    to search, and our scope is the text of digital files: a note. But a file with more of them than the pre-check
+    lets a scan have (slides made of screenshots) is mostly unanswerable: a problem, so the teacher sees it at once.
+    """
+    problems = [messages.hard_to_read(pre.garbage_pages)] if pre.garbage_pages else []
+    notes = []
+    if pre.scanned_pages and pre.pages_total and len(set(pre.scanned_pages)) / pre.pages_total > UNREADABLE_SHARE_MAX:
+        problems.append(messages.mostly_pictures("Pages", pre.scanned_pages, pre.pages_total))
+    elif pre.scanned_pages:
+        notes.append(messages.no_text_units("Pages", pre.scanned_pages))
+    return problems, notes

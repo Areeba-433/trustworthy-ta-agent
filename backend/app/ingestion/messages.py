@@ -28,6 +28,12 @@ def hard_to_read(pages: list[int]) -> str:
     return f"Pages {format_ranges(pages)} were hard to read; answers from them may be less reliable."
 
 
+def mostly_pictures(unit_name: str, units: list[int], total: int) -> str:
+    """unit_name is plural, like "Pages". For a file most of whose pages hold their text only in pictures."""
+    return (f"{len(set(units))} of {total} {unit_name.lower()} ({format_ranges(units)}) are pictures with no readable "
+            f"text, so questions about them can't be answered yet.")
+
+
 def no_text_units(unit_name: str, units: list[int]) -> str:
     """unit_name is plural, like "Pages" or "Slides"."""
     if len(set(units)) == 1:
