@@ -21,8 +21,8 @@ import tree_sitter_cpp
 from tree_sitter import Language, Parser
 
 from app.ingestion import messages
-from app.ingestion.contract import Block, Location, ParsedDocument, QualityReport, ResourceMeta
-from app.ingestion.dispatcher import failed_document
+from app.ingestion.contract import Block, Location, ParsedDocument, ResourceMeta
+from app.ingestion.documents import FileRefused, parsed_document
 from app.ingestion.registry import register
 from app.ingestion.storage import Timer
 
@@ -282,13 +282,13 @@ def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
     try:
         raw = Path(path).read_bytes()
     except OSError:
-        return failed_document(meta, "code", messages.UNREADABLE)
+        raise FileRefused(messages.UNREADABLE)
 
     source = _decode(raw)
     if source is None:
-        return failed_document(meta, "code", messages.UNREADABLE)
+        raise FileRefused(messages.UNREADABLE)
     if not source.strip():
-        return failed_document(meta, "code", messages.NO_TEXT_FILE)
+        raise FileRefused(messages.NO_TEXT_FILE)
 
     title = meta.file_name  # e.g. "stack.cpp" (keeps .cpp / .h apart)
     lines = _split_lines(source)
@@ -314,20 +314,7 @@ def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
             )
         )
 
-    return ParsedDocument(
-        resource_id=meta.resource_id,
-        course_id=meta.course_id,
-        file_name=meta.file_name,
-        file_sha256=meta.file_sha256,
-        source_type="code",
-        title=title,
-        parser=_PARSER,
-        parser_version=_PARSER_VERSION,
-        blocks=blocks,
-        quality=QualityReport(
-            status="ok",
-            units_total=len(lines),
-            chars_total=sum(len(b.text) for b in blocks),
-            seconds_taken=timer.seconds,
-        ),
-    )
+    doc = parsed_document(meta, title=title, blocks=blocks, parser=_PARSER,
+                          parser_version=_PARSER_VERSION, units_total=len(lines))
+    doc.quality.seconds_taken.update(timer.seconds)
+    return doc

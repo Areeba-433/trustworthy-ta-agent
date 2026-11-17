@@ -3,8 +3,10 @@ from pathlib import Path
 
 import pytest
 
+from app.ingestion import messages
 from app.ingestion.contract import ResourceMeta
 from app.ingestion.dispatcher import ingest_file
+from app.ingestion.documents import FileRefused
 from app.ingestion.loaders import code as code_loader
 from app.ingestion.loaders import text as text_loader
 from app.ingestion.precheck import precheck
@@ -82,7 +84,8 @@ def test_lines_between_two_namespaces_get_no_wrong_namespace():
     segs = code_loader.split_cpp(src)
     assert [s.path for s in segs if s.symbol] == [["namespace a", "f()"], ["namespace b", "g()"]]
     assert all(s.path == [] for s in segs if s.symbol is None)  # "}" of a + "namespace b {"
-    
+
+
 def test_comment_above_function_stays_with_it():
     doc = _load_code("stack.cpp")
     push = next(b for b in doc.blocks if b.heading_path[-1] == "push(int x)")
@@ -103,13 +106,16 @@ def test_code_is_never_cleaned():
     assert "    if (top >= MAX_SIZE - 1) {" in lines  # indentation kept, line not merged
 
 
-def test_empty_code_file_fails_politely(tmp_path):
+def test_empty_code_file_fails_politely(tmp_path, data_dir):
     f = tmp_path / "empty.cpp"
-    f.write_text("  \n\n")
-    doc = code_loader.load(f, _meta(f))
+    f.write_bytes(b"  \n\n")
+    with pytest.raises(FileRefused) as refused:                 # the loader refuses the file...
+        code_loader.load(f, _meta(f))
+    assert refused.value.reason == messages.NO_TEXT_FILE
+    doc = ingest_file(f, "empty_cpp", "c1")                     # ...and the dispatcher fails it politely
     assert doc.blocks == []
     assert doc.quality.status == "failed"
-    assert doc.quality.warnings
+    assert doc.quality.warnings == [messages.NO_TEXT_FILE]
 
 
 def test_broken_code_still_returns_blocks(tmp_path):
@@ -170,11 +176,14 @@ def test_plain_text_splits_on_blank_lines():
     assert all(b.heading_path == ["readme.txt"] for b in doc.blocks)
 
 
-def test_empty_text_file_fails_politely():
-    doc = _load_text("empty.txt")
+def test_empty_text_file_fails_politely(data_dir):
+    with pytest.raises(FileRefused) as refused:
+        _load_text("empty.txt")
+    assert refused.value.reason == messages.NO_TEXT_FILE
+    doc = ingest_file(SAMPLES / "empty.txt", "empty_txt", "c1")
     assert doc.blocks == []
     assert doc.quality.status == "failed"
-    assert doc.quality.warnings
+    assert doc.quality.warnings == [messages.NO_TEXT_FILE]
 
 
 def test_markdown_list_items_stay_on_separate_lines():

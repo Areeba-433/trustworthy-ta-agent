@@ -15,8 +15,8 @@ from pathlib import Path
 
 from app.ingestion import messages
 from app.ingestion.cleaning.common import clean_text, detect_lang
-from app.ingestion.contract import Block, Location, ParsedDocument, QualityReport, ResourceMeta
-from app.ingestion.dispatcher import failed_document
+from app.ingestion.contract import Block, Location, ParsedDocument, ResourceMeta
+from app.ingestion.documents import FileRefused, parsed_document
 from app.ingestion.registry import register
 from app.ingestion.storage import Timer
 
@@ -33,7 +33,10 @@ _MARKDOWN_SUFFIXES = {".md", ".markdown"}
 # A run of lines with no blank line can be very long (a log, a numbered list, a whole file).
 # We cut it at a line boundary every ~150 words, so every block - and so every chunk - keeps
 # a precise line range for its citation instead of one range covering hundreds of lines.
+# This is a BLOCK cut, not the chunk size limit: chunk sizes (512) are still counted only with
+# count_tokens() in the chunker. A rough word count is enough here and keeps the loader fast.
 _MAX_PARAGRAPH_WORDS = 150
+
 
 def _decode(raw: bytes) -> str | None:
     for enc in ("utf-8-sig", "cp1252"):
@@ -149,13 +152,13 @@ def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
     try:
         raw = Path(path).read_bytes()
     except OSError:
-        return failed_document(meta, "text", messages.UNREADABLE)
+        raise FileRefused(messages.UNREADABLE)
 
     source = _decode(raw)
     if source is None:
-        return failed_document(meta, "text", messages.UNREADABLE)
+        raise FileRefused(messages.UNREADABLE)
     if not source.strip():
-        return failed_document(meta, "text", messages.NO_TEXT_FILE)
+        raise FileRefused(messages.NO_TEXT_FILE)
 
     title = meta.file_name  # e.g. "notes.md"
     is_markdown = Path(meta.file_name).suffix.lower() in _MARKDOWN_SUFFIXES
@@ -200,23 +203,8 @@ def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
             )
         )
 
-    if not blocks:
-        return failed_document(meta, "text", messages.NO_TEXT_FILE)
-
-    return ParsedDocument(
-        resource_id=meta.resource_id,
-        course_id=meta.course_id,
-        file_name=meta.file_name,
-        file_sha256=meta.file_sha256,
-        source_type="text",
-        title=title,
-        parser="markdown" if is_markdown else "plain-text",
-        parser_version=_PARSER_VERSION,
-        blocks=blocks,
-        quality=QualityReport(
-            status="ok",
-            units_total=len(source.splitlines()),
-            chars_total=sum(len(b.text) for b in blocks),
-            seconds_taken=timer.seconds,
-        ),
-    )
+    doc = parsed_document(meta, title=title, blocks=blocks,               # no blocks -> failed, NO_TEXT_FILE
+                          parser="markdown" if is_markdown else "plain-text",
+                          parser_version=_PARSER_VERSION, units_total=len(source.splitlines()))
+    doc.quality.seconds_taken.update(timer.seconds)
+    return doc

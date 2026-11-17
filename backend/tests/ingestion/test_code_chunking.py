@@ -6,9 +6,12 @@ from pathlib import Path
 
 import pytest
 
+from app.ingestion import messages
 from app.ingestion.chunking.chunkers import code as code_chunker
+from app.ingestion.chunking.chunkers import text as text_chunker
 from app.ingestion.chunking.registry import get_chunker
 from app.ingestion.contract import MAX_CHUNK_TOKENS, ResourceMeta
+from app.ingestion.documents import failed_document
 from app.ingestion.loaders import code as code_loader
 from app.ingestion.loaders import text as text_loader
 from app.ingestion.pipeline import process
@@ -127,14 +130,21 @@ def test_glue_that_does_not_fit_stays_alone(tmp_path, word_tokens, monkeypatch):
     drafts = code_chunker.code_drafts(code_loader.load(f, _meta(f)))
     assert [d.heading_path for d in drafts] == [["x.cpp"], ["x.cpp", "f()"]]
 
+
 def test_failed_document_is_not_chunked(tmp_path, word_tokens):
     f = tmp_path / "empty.cpp"
     f.write_bytes(b"\n\n")
+    failed = failed_document(_meta(f), "code", messages.NO_TEXT_FILE)
     with pytest.raises(ValueError):
-        code_chunker.code_drafts(code_loader.load(f, _meta(f)))
+        code_chunker.code_drafts(failed)
 
 
 # ------------------------------------------------------------------ text
+def test_text_chunker_is_registered_with_its_name(word_tokens):
+    chunked = _text_chunks(SAMPLES / "notes.md")
+    assert chunked.chunker == text_chunker.NAME == "text-sections/2"
+
+
 def test_markdown_chunks_follow_headings(word_tokens):
     chunks = _text_chunks(SAMPLES / "notes.md").chunks
     assert [c.heading_path for c in chunks] == [
@@ -180,7 +190,6 @@ def test_processing_twice_gives_the_same_chunks_json(data_dir, word_tokens):
     process(SAMPLES / "stack.cpp", "again", "c1")
     assert chunks_path("again").read_bytes() == first
 
-    
 
 # ------------------------------------------------------------------ special files, end to end
 # Each file is generated here (the repo is public: no real course files are committed).
@@ -224,7 +233,6 @@ def test_empty_or_garbage_file_fails_politely_without_chunks(tmp_path, data_dir,
     assert result.warnings                                # a message the teacher can read
     assert not chunks_path("bad_file").exists()
 
-    
 
 def test_unclosed_namespace_still_gives_one_chunk_per_function(tmp_path, data_dir, word_tokens):
     # Inside an include guard, "namespace app {" is never closed: Tree-sitter wraps it all in an ERROR node.
@@ -256,7 +264,6 @@ def test_long_function_with_repeated_lines_keeps_exact_line_numbers(tmp_path, wo
         assert c.loc.line_end - c.loc.line_start + 1 >= len(piece_lines)
     assert chunks[-1].loc.line_end == len(source.splitlines())
 
-    
 
 def test_closing_glue_after_a_long_function_joins_its_last_piece(tmp_path, word_tokens):
     # The function is cut into pieces; "} // namespace app" and "#endif" must not become tiny chunks.
@@ -271,7 +278,6 @@ def test_closing_glue_after_a_long_function_joins_its_last_piece(tmp_path, word_
     assert "} // namespace app" in chunks[-1].text and "#endif" in chunks[-1].text
     assert chunks[-1].loc.line_end == len(source.splitlines())
     assert all(c.token_count <= MAX_CHUNK_TOKENS for c in chunks)
-
 
 
 def test_text_without_blank_lines_keeps_precise_line_numbers(tmp_path, data_dir, word_tokens):
