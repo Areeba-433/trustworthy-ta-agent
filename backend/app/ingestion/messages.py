@@ -34,6 +34,15 @@ def mostly_pictures(unit_name: str, units: list[int], total: int) -> str:
             f"text, so questions about them can't be answered yet.")
 
 
+def hidden_units(unit_name: str, units: list[int]) -> str:
+    """unit_name is plural, like "Slides". Hidden content is left out, so the TA never answers from it."""
+    if len(set(units)) == 1:
+        return (f"{unit_name.removesuffix('s')} {units[0]} is hidden, so it was left out. Unhide it and upload the "
+                f"file again if students should get answers from it.")
+    return (f"{unit_name} {format_ranges(units)} are hidden, so they were left out. Unhide them and upload the file "
+            f"again if students should get answers from them.")
+
+
 def no_text_units(unit_name: str, units: list[int]) -> str:
     """unit_name is plural, like "Pages" or "Slides"."""
     if len(set(units)) == 1:

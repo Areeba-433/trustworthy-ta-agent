@@ -1,5 +1,4 @@
 """The PDF loader: Docling's result (faked here, see conftest) becomes a ParsedDocument with page numbers."""
-import pytest
 from docling_core.types.doc import DoclingDocument
 
 from app.ingestion import messages, registry
@@ -28,23 +27,8 @@ def test_a_book_becomes_blocks_with_page_numbers(digital_pdf, data_dir):
     assert {"docling", "blocks"} <= set(doc.quality.seconds_taken)
 
 
-@pytest.mark.parametrize("file_name, title", [
-    ("Lecture 5.pptx.pdf", "Lecture 5"),
-    ("Vectors -Autosaved-.pptx.pdf", "Vectors"),
-    ("Vectors (Autosaved).pptx.pdf", "Vectors"),
-    ("AB12-Software Patching Assignment.docx.pdf", "AB12 Software Patching Assignment"),
-    ("Lecture 5.pptx (1).pdf", "Lecture 5"),
-    ("Lecture_9_Stack_applications(2).ppt.pdf", "Lecture 9 Stack applications"),
-    ("DOC-20260101-WA0001..pdf", "DOC 20260101 WA0001"),
-    ("Course_Presentation_Final.pdf", "Course Presentation"),                 # title_from_filename() as before
-    ("Lecture 9.1 Stacks.pdf", "Lecture 9.1 Stacks"),                   # a dot that is no extension stays
-    ("Autosaved.pptx.pdf", "Autosaved.pptx"),                           # nothing else in the name: as before
-])
-def test_a_pdf_s_title_leaves_out_the_name_of_the_file_it_was_made_from(file_name, title):
-    assert pdf.pdf_title(file_name) == title
-
-
 def test_the_pdf_loader_titles_a_pdf_of_slides_by_its_own_name(digital_pdf):
+    """The title rules are the shared title_from_filename()'s (test_cleaning.py)."""
     assert pdf.load(digital_pdf, _meta(file_name="Lecture 5.pptx.pdf")).title == "Lecture 5"
 
 

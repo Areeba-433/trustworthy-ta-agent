@@ -3,7 +3,7 @@ import pytest
 
 from app.ingestion import messages
 from app.ingestion.contract import Block, Location, PrecheckResult, ResourceMeta
-from app.ingestion.documents import failed_document, parsed_document
+from app.ingestion.documents import document_title, failed_document, parsed_document, picture_findings
 
 TITLE = "DSA notes"
 
@@ -62,3 +62,27 @@ def test_a_failed_document_carries_the_reason_and_a_title_from_the_file_name():
     assert doc.quality.status == "failed"
     assert doc.quality.warnings == [messages.UNREADABLE]
     assert doc.title and doc.blocks == []
+
+@pytest.mark.parametrize("file_name, source_type, title", [
+    ("stack.cpp", "code", "stack.cpp"), ("stack.h", "code", "stack.h"),       # .cpp and .h stay apart
+    ("notes.md", "text", "notes.md"), ("readme.txt", "text", "readme.txt"),
+    ("Lecture 5.pptx.pdf", "pdf", "Lecture 5"), ("Vectors (Autosaved).pptx", "pptx", "Vectors"),
+    ("L4_normalization_final.docx", "docx", "L4 normalization"),
+])
+def test_a_document_s_title_depends_on_its_format(file_name, source_type, title):
+    assert document_title(file_name, source_type) == title
+
+
+def test_a_failed_file_has_the_title_it_would_have_had():
+    meta = ResourceMeta(resource_id="r1", course_id="c1", file_name="empty.cpp", file_sha256="a" * 64,
+                        precheck=PrecheckResult(source_type="code", pages_total=1))
+    assert failed_document(meta, "code", messages.NO_TEXT_FILE).title == "empty.cpp"
+    assert failed_document(_meta(), "pdf", messages.NO_TEXT_FILE).title == "dsa notes"
+
+
+def test_a_few_picture_pages_are_a_note_and_more_than_one_in_five_a_problem():
+    assert picture_findings("Slides", [], 20) == ([], [])
+    assert picture_findings("Slides", [4, 4], 20) == ([], [messages.no_text_units("Slides", [4])])
+    problems, notes = picture_findings("Slides", [1, 2, 3, 4, 5], 20)                    # 5 of 20: one in four
+    assert (problems, notes) == ([messages.mostly_pictures("Slides", [1, 2, 3, 4, 5], 20)], [])
+    assert picture_findings("Pages", [1, 2, 3, 4], 20)[0] == []                           # 4 of 20: exactly 1 in 5
