@@ -50,8 +50,6 @@ class Settings(BaseSettings):
         # Ingestion
     INGESTION_DATA_DIR: str = os.getenv("INGESTION_DATA_DIR", "data/ingestion")
     INGESTION_MAX_FILE_MB: int = int(os.getenv("INGESTION_MAX_FILE_MB", 50))
-    # Embeddings and vector store (app/rag)
-    CHROMA_DIR: str = os.getenv("CHROMA_DIR", "data/chroma")
 
 # Create a single instance of settings
 settings = Settings()
