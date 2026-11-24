@@ -79,11 +79,18 @@ def _split_lines(source: str) -> list[str]:
 
 
 def _decode(raw: bytes) -> str | None:
+    """Bytes -> text, with Windows (\\r\\n) and old Mac (\\r) line endings turned into \\n, as the text loader does.
+
+    Why: split_to_fit() cuts a too-long class or function at blank lines ("\\n\\n") first, which fall between
+    methods. In a file saved on Windows a blank line is "\\r\\n\\r\\n", so that rule never matched: the class
+    was cut in the middle of a method and the blank lines inside the pieces were dropped. Line numbers stay the same.
+    """
     for enc in ("utf-8-sig", "cp1252"):
         try:
-            return raw.decode(enc)
+            text = raw.decode(enc)
         except UnicodeDecodeError:
             continue
+        return text.replace("\r\n", "\n").replace("\r", "\n")
     return None
 
 
@@ -91,9 +98,17 @@ def _decode(raw: bytes) -> str | None:
 # Naming: what label does a unit get in heading_path?
 # --------------------------------------------------------------------------
 def _find_function_declarator(node):
-    """Walk down declarator -> declarator ... until we hit function_declarator."""
+    """Walk down declarator -> declarator ... until we hit function_declarator.
+
+    A function that returns a reference (ostream &operator<<(...), int &at(...)) has a reference_declarator
+    on the way, and in the C++ grammar that node has no "declarator" field: its inner declarator is its only
+    named child. Without this step such functions were labelled just "function".
+    """
     while node is not None and node.type != "function_declarator":
-        node = node.child_by_field_name("declarator")
+        if node.type == "reference_declarator":
+            node = node.named_children[0] if node.named_children else None
+        else:
+            node = node.child_by_field_name("declarator")
     return node
 
 
