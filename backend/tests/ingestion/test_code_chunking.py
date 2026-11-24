@@ -37,7 +37,7 @@ def _text_chunks(path: Path):
 # ------------------------------------------------------------------ code
 def test_code_chunker_is_registered_with_its_name(word_tokens):
     chunked = _code_chunks(SAMPLES / "stack.cpp")
-    assert chunked.chunker == code_chunker.NAME == "code-units/3"
+    assert chunked.chunker == code_chunker.NAME == "code-units/4"
 
 
 def test_one_chunk_per_function_and_class(word_tokens):
@@ -264,6 +264,29 @@ def test_long_function_with_repeated_lines_keeps_exact_line_numbers(tmp_path, wo
         assert c.loc.line_end - c.loc.line_start + 1 >= len(piece_lines)
     assert chunks[-1].loc.line_end == len(source.splitlines())
 
+def _long_class(methods: int = 10) -> str:
+    body = "".join(f"        step = step + {j}; // the student explains this step in plain words here\n"
+                   for j in range(8))
+    parts = [f"    // method {i}\n    void m{i}() {{\n{body}    }}\n" for i in range(methods)]
+    return "class Big {\npublic:\n" + "\n".join(parts) + "};\n"     # a blank line between methods
+
+
+def test_windows_line_endings_split_a_long_class_between_methods(tmp_path, word_tokens):
+    # Found in testing (oop_bank_account.cpp): with \r\n endings a long class was cut inside a method.
+    source = _long_class()
+    lf, crlf = tmp_path / "big_lf.cpp", tmp_path / "big_crlf.cpp"
+    lf.write_bytes(source.encode())
+    crlf.write_bytes(source.replace("\n", "\r\n").encode())
+    unix, windows = _code_chunks(lf).chunks, _code_chunks(crlf).chunks
+
+    assert len(windows) > 1
+    assert [(c.text, c.loc) for c in windows] == [(c.text, c.loc) for c in unix]   # \r\n changes nothing
+    pieces = [c for c in windows if c.heading_path[-1] == "class Big"]
+    for piece in pieces[:-1]:
+        assert piece.text.rstrip().endswith("}")                 # each cut comes after a whole method...
+    for piece in pieces[1:]:
+        assert piece.text.lstrip().startswith("// method")       # ...and the next piece starts a new one
+    assert "\n\n" in pieces[0].text                              # blank lines between methods are kept
 
 def test_closing_glue_after_a_long_function_joins_its_last_piece(tmp_path, word_tokens):
     # The function is cut into pieces; "} // namespace app" and "#endif" must not become tiny chunks.

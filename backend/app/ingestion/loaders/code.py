@@ -79,11 +79,18 @@ def _split_lines(source: str) -> list[str]:
 
 
 def _decode(raw: bytes) -> str | None:
+    """Bytes -> text, with Windows (\\r\\n) and old Mac (\\r) line endings turned into \\n, as the text loader does.
+
+    Why: split_to_fit() cuts a too-long class or function at blank lines ("\\n\\n") first, which fall between
+    methods. In a file saved on Windows a blank line is "\\r\\n\\r\\n", so that rule never matched: the class
+    was cut in the middle of a method and the blank lines inside the pieces were dropped. Line numbers stay the same.
+    """
     for enc in ("utf-8-sig", "cp1252"):
         try:
-            return raw.decode(enc)
+            text = raw.decode(enc)
         except UnicodeDecodeError:
             continue
+        return text.replace("\r\n", "\n").replace("\r", "\n")
     return None
 
 

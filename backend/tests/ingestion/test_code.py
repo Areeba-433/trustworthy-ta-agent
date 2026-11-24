@@ -125,14 +125,16 @@ def test_broken_code_still_returns_blocks(tmp_path):
     assert "".join(b.text for b in doc.blocks) == "int main( {\n  return 0\n"
 
 
-def test_windows_line_endings_rebuild_exactly(tmp_path):
+def test_windows_line_endings_become_unix_with_the_same_lines(tmp_path):
     original = b"#include <x>\r\n\r\nint f() {\r\n  return 1;\r\n}\r\n"
     f = tmp_path / "win.cpp"
     f.write_bytes(original)
     doc = code_loader.load(f, _meta(f))
-    assert "".join(b.text for b in doc.blocks).encode("utf-8") == original
-    assert ["win.cpp", "f()"] in [b.heading_path for b in doc.blocks]
-
+    rebuilt = "".join(b.text for b in doc.blocks)
+    assert rebuilt == original.decode().replace("\r\n", "\n")      # only the line endings change
+    assert "\r" not in rebuilt
+    f_block = next(b for b in doc.blocks if b.heading_path == ["win.cpp", "f()"])
+    assert (f_block.loc.line_start, f_block.loc.line_end) == (3, 5)  # same line numbers as in the file
 
 # ------------------------------------------------------------------ text
 def test_markdown_headings_become_heading_path():

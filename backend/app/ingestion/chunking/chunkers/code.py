@@ -21,7 +21,7 @@ from app.ingestion.chunking.split import split_to_fit
 from app.ingestion.chunking.tokens import count_tokens
 from app.ingestion.contract import MAX_CHUNK_TOKENS, Block, ChunkedDocument, Location, ParsedDocument
 
-NAME = "code-units/3"     # saved with every chunk: raise the number whenever this chunker's output changes
+NAME = "code-units/4"     # saved with every chunk: raise the number whenever this chunker's output changes
 
 _GLUE_PREFIXES = ("namespace ", 'extern "C"')
 _CLOSERS = ("}", "#endif", "#else", "#elif")
