@@ -98,9 +98,17 @@ def _decode(raw: bytes) -> str | None:
 # Naming: what label does a unit get in heading_path?
 # --------------------------------------------------------------------------
 def _find_function_declarator(node):
-    """Walk down declarator -> declarator ... until we hit function_declarator."""
+    """Walk down declarator -> declarator ... until we hit function_declarator.
+
+    A function that returns a reference (ostream &operator<<(...), int &at(...)) has a reference_declarator
+    on the way, and in the C++ grammar that node has no "declarator" field: its inner declarator is its only
+    named child. Without this step such functions were labelled just "function".
+    """
     while node is not None and node.type != "function_declarator":
-        node = node.child_by_field_name("declarator")
+        if node.type == "reference_declarator":
+            node = node.named_children[0] if node.named_children else None
+        else:
+            node = node.child_by_field_name("declarator")
     return node
 
 

@@ -136,6 +136,22 @@ def test_windows_line_endings_become_unix_with_the_same_lines(tmp_path):
     f_block = next(b for b in doc.blocks if b.heading_path == ["win.cpp", "f()"])
     assert (f_block.loc.line_start, f_block.loc.line_end) == (3, 5)  # same line numbers as in the file
 
+def test_functions_returning_a_reference_keep_their_name(tmp_path):
+    # Found in testing (oop_operator_overloading.cpp): ostream &operator<<(...) was labelled just "function".
+    f = tmp_path / "ops.cpp"
+    f.write_bytes(b"#include <iostream>\nstruct T { int h; };\n\n"
+                  b"std::ostream &operator<<(std::ostream &out, const T &t)\n{\n    return out << t.h;\n}\n\n"
+                  b"int &first(int *a)\n{\n    return a[0];\n}\n\n"
+                  b"T &&take(T &t)\n{\n    return static_cast<T &&>(t);\n}\n\n"
+                  b"T &T_copy(T &a, const T &b)\n{\n    a = b;\n    return a;\n}\n")
+    doc = code_loader.load(f, _meta(f))
+    names = [b.heading_path[-1] for b in doc.blocks]
+    assert "operator<<(std::ostream &out, const T &t)" in names
+    assert "first(int *a)" in names
+    assert "take(T &t)" in names                     # && (rvalue reference) too
+    assert "T_copy(T &a, const T &b)" in names
+    assert "function" not in names
+
 # ------------------------------------------------------------------ text
 def test_markdown_headings_become_heading_path():
     doc = _load_text("notes.md")
