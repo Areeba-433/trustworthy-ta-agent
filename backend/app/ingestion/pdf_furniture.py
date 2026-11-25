@@ -21,14 +21,15 @@ Words are compared by their letters, not by their spelling: the tab is set in sm
 "LOOPS AND DECISIONS" as "L D OOPS AND ECISIONS".
 """
 import logging
-from collections import Counter
+import re
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
 import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_c
 from docling_core.types.doc import (BoundingBox, ContentLayer, CoordOrigin, DocItemLabel, DoclingDocument,
-                                    ProvenanceItem, TableData, TableItem)
+                                    ProvenanceItem, SectionHeaderItem, TableData, TableItem)
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,12 @@ _MIN_ROTATED = 3        # fewer rotated letters than this is not a tab (a stray 
 _NUMBER_SIDE = 15.0     # points: how far beside the rotated letters the chapter's number can stand
 _NUMBER_GAP = 25.0      # points: how far above or below them
 _NEAR = 6.0             # points: Docling's box of a piece of the tab can stick out of the tab's box this much
+_ENTRY = re.compile(r"(?:^|\s)(?:\d{1,4}|[ivxlc]{1,7})$", re.IGNORECASE)   # a contents entry ends in its page: "Preface xv"
+_ENTRY_SHARE = 0.6      # a page next to the contents with this share of its lines ending in a page number is contents
+_MIN_ENTRIES = 3        # fewer lines than this is no contents page (a blank page's one note)
+_ENTRY_WORDS = 20       # words: a longer line is no entry (DataStructures.pdf: entries up to 15, references median 20)
+_RUNNING_HEAD = re.compile(r"[ivxlc]{1,7}\s+[A-Z].*")     # a front-matter running head: "xviii Preface"
+_HEAD_ZONE = 0.1        # the top of the page where a running head stands, as a share of the page's height
 
 
 @dataclass(frozen=True)
@@ -91,11 +98,14 @@ def remove_contents_and_index(doc: DoclingDocument) -> int:
     running title, and on many index pages whole columns of entries as paragraphs ("containers, 415-419 data
     hiding, 218 …") or as a table. So every page with a document index is left out entirely, and so is everything
     from the index's own heading ("Index" on a page with a document index, in the last tenth of the book) to the
-    end. The OOP book: 18 contents pages, 32 index pages."""
+    end. The OOP book: 18 contents pages, 32 index pages. Docling can miss the document index on the first and the
+    last contents page, whose entries then come through as list items (DataStructures.pdf pages 8 and 15, beside
+    pages 9 to 14): a page next to those pages whose lines mostly end in a page number goes too."""
     index_pages = {prov.page_no for table in doc.tables if table.label == DocItemLabel.DOCUMENT_INDEX
                    for prov in table.prov}
     if not index_pages:
         return 0
+    index_pages |= _entry_pages_beside(doc, index_pages)
     last = max(doc.pages, default=0)
     index_start = min((item.prov[0].page_no for item in doc.texts
                        if item.label == DocItemLabel.SECTION_HEADER and item.text.strip().casefold() == "index"
@@ -111,6 +121,49 @@ def remove_contents_and_index(doc: DoclingDocument) -> int:
     logger.info("contents and index: %d pages, %d items left out", len(index_pages | set(range(index_start, last + 1))),
                 left_out)
     return left_out
+
+
+def _entry_pages_beside(doc: DoclingDocument, pages: set[int]) -> set[int]:
+    """The pages beside `pages`, and beside those in turn, made of contents or index entries: most of their lines
+    end in a page number ("1.2 Mathematics Review 2", "Preface xv"). Running heads are Docling's page headers,
+    already out of the body, so they do not count."""
+    lines: dict[int, list[str]] = defaultdict(list)
+    for item in doc.texts:
+        if item.content_layer == ContentLayer.BODY and item.prov and item.text.strip():
+            lines[item.prov[0].page_no].append(item.text.strip())
+    found = set(pages)
+    while True:
+        more = {page for page in {p + step for p in found for step in (-1, 1)} - found
+                if len(lines[page]) >= _MIN_ENTRIES
+                and sum(_is_entry(line) for line in lines[page]) >= _ENTRY_SHARE * len(lines[page])}
+        if not more:
+            return found - pages
+        found |= more
+
+
+def _is_entry(line: str) -> bool:
+    """A contents or index entry: a short line ending in a page number. A reference list's entries are longer."""
+    return len(line.split()) <= _ENTRY_WORDS and _ENTRY.search(line) is not None
+
+
+def remove_running_heads(doc: DoclingDocument) -> int:
+    """Leave out a front-matter running head that Docling read as a heading: a heading at the top of its page that
+    starts with the page's roman number ("xviii Preface", DataStructures.pdf page 19, 6% from the top). Docling
+    usually marks a running head as a page header; read as a heading, it named a section of the preface. Changes
+    `doc` in place; returns how many it left out."""
+    found = 0
+    for item in doc.texts:
+        if not isinstance(item, SectionHeaderItem) or item.content_layer != ContentLayer.BODY or not item.prov:
+            continue
+        prov = item.prov[0]
+        page = doc.pages.get(prov.page_no)
+        if page is None or not _RUNNING_HEAD.fullmatch(item.text.strip()):
+            continue
+        if prov.bbox.to_top_left_origin(page.size.height).t <= _HEAD_ZONE * page.size.height:
+            item.content_layer = ContentLayer.FURNITURE
+            found += 1
+    logger.info("%d running heads Docling read as headings left out", found)
+    return found
 
 
 def chapter_tabs(path: Path) -> dict[int, Tab]:

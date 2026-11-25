@@ -8,7 +8,7 @@ from app.ingestion.converter import Conversion
 from app.ingestion.dispatcher import ingest_file
 from app.ingestion.docling_blocks import to_blocks
 from app.ingestion.loaders import pdf
-from app.ingestion.pdf_furniture import chapter_tabs, remove_chapter_tabs, tab_characters
+from app.ingestion.pdf_furniture import chapter_tabs, remove_chapter_tabs, remove_running_heads, tab_characters
 
 
 # Where Docling puts an item, in points from the page's top-left corner, as it measures
@@ -283,6 +283,46 @@ def test_an_index_heading_early_in_the_book_is_course_text():
     doc.texts[2].prov[0].page_no = 3                     # "Index" on page 3 of 10
     remove_contents_and_index(doc)
     assert "Index" in _texts(doc)
+
+
+def test_the_first_and_last_contents_pages_go_when_docling_read_them_as_lists():
+    """DataStructures.pdf: Docling found the document index on contents pages 9 to 14 only. Page 8 (its heading set
+    letter-spaced, "CO NTE NTS", and the first entries) and page 15 (the last entries) came through: 36 entries,
+    one chunk cited as pages 8-15. A page beside the contents whose lines end in page numbers goes too; the preface
+    after it stays."""
+    from docling_core.types.doc import Size, TableData
+    from app.ingestion.pdf_furniture import remove_contents_and_index
+    doc = DoclingDocument(name="book")
+    for page in range(1, 11):
+        doc.add_page(page_no=page, size=Size(width=595, height=842))
+    doc.add_heading("CO NTE NTS", prov=_prov(1))
+    for entry in ["Preface xv", "1.1 What's This Book About? 1", "1.2 Mathematics Review 2"]:
+        doc.add_text(DocItemLabel.TEXT, entry, prov=_prov(1))
+    doc.add_table(data=TableData(num_rows=1, num_cols=1), label=DocItemLabel.DOCUMENT_INDEX, prov=_prov(2))
+    for entry in ["12.4 Suffix Arrays and Suffix Trees 579", "Summary 606", "Exercises 608"]:
+        doc.add_text(DocItemLabel.TEXT, entry, prov=_prov(3))
+    doc.add_heading("Preface", prov=_prov(4))
+    doc.add_text(DocItemLabel.TEXT, "This book describes data structures, methods of organizing data.", prov=_prov(4))
+    doc.add_text(DocItemLabel.TEXT, "The second edition was published in 1999.", prov=_prov(4))
+    remove_contents_and_index(doc)
+    assert _texts(doc) == ["Preface", "This book describes data structures, methods of organizing data.",
+                           "The second edition was published in 1999."]
+
+
+def test_a_roman_running_head_read_as_a_heading_is_left_out():
+    """DataStructures.pdf page 19: "xviii Preface", the running head at the top of the page, was a heading. The same
+    words lower on a page, and a real heading at the top, stay."""
+    from docling_core.types.doc import Size
+    doc = DoclingDocument(name="book")
+    doc.add_page(page_no=1, size=Size(width=595, height=842))
+    top = BoundingBox(l=72, t=50, r=300, b=62, coord_origin=CoordOrigin.TOPLEFT)
+    lower = BoundingBox(l=72, t=400, r=300, b=412, coord_origin=CoordOrigin.TOPLEFT)
+    doc.add_heading("xviii Preface", prov=_prov(1, top))
+    doc.add_heading("Appendix C", prov=_prov(1, top))
+    doc.add_text(DocItemLabel.TEXT, "This book is far too brief to be used in such a course.", prov=_prov(1, lower))
+    doc.add_heading("xviii Preface", prov=_prov(1, lower))
+    assert remove_running_heads(doc) == 1
+    assert _texts(doc) == ["Appendix C", "This book is far too brief to be used in such a course.", "xviii Preface"]
 
 
 def test_a_book_without_a_document_index_is_left_as_it_is():

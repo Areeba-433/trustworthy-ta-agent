@@ -1,5 +1,6 @@
 """PDF loader (owner: Minahil). Docling reads the book. On Docling's result: remove_chapter_tabs() takes the decoration
-on the page edges out, remove_contents_and_index() the contents and index pages, add_missed_pictures() adds a
+on the page edges out, remove_contents_and_index() the contents and index pages, remove_running_heads() a
+front-matter running head Docling read as a heading ("xviii Preface"), add_missed_pictures() adds a
 picture for each image of the PDF that Docling left out entirely (a code screenshot it took for text),
 link_figure_labels() gives a picture the "FIGURE 2.3" label Docling read as a heading or left loose,
 join_caption_lines() gives a caption back its description line, and split_long_headings() cuts a heading Docling
@@ -8,6 +9,8 @@ headings, set_heading_levels() puts each heading under the bigger ones by its si
 chapter's heading after the PDF's bookmark ("Chapter 9: Inheritance"). Then to_blocks() makes blocks,
 restore_code_lines() gives code listings their lines back and tells code from sentences by font, mark_exponents()
 keeps the exponent of a power of ten ("10^308"), order_by_position() puts what stands higher on a page first,
+drop_blank_page_notes() takes "This page intentionally left blank" out, theorem_labels() makes a paragraph of a
+theorem's label Docling read as a heading ("Proof", "Lemma 7.2"),
 as_slides() keeps one heading per slide when the PDF is slides (every page wider than tall) and keep_line_breaks()
 gives a slide's paragraphs their lines back ("Scope" points, one per line), join_page_listings()
 makes one block of a listing that a page break cut in two (not in slides: each slide's code is its own), and
@@ -26,9 +29,10 @@ from app.ingestion.documents import document_title, parsed_document, picture_fin
 from app.ingestion.pdf_code import restore_code_lines
 from app.ingestion.pdf_exponents import mark_exponents
 from app.ingestion.pdf_figures import join_caption_lines, link_figure_labels, mark_figures
-from app.ingestion.pdf_furniture import remove_chapter_tabs, remove_contents_and_index
+from app.ingestion.pdf_furniture import remove_chapter_tabs, remove_contents_and_index, remove_running_heads
 from app.ingestion.pdf_headings import split_long_headings
 from app.ingestion.pdf_images import add_missed_pictures
+from app.ingestion.pdf_labels import drop_blank_page_notes, theorem_labels
 from app.ingestion.pdf_order import order_by_position
 from app.ingestion.pdf_slides import as_slides, is_slides, keep_line_breaks
 from app.ingestion.pdf_structure import join_page_listings, list_headings, name_chapters, set_heading_levels
@@ -48,6 +52,8 @@ def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
         remove_chapter_tabs(conversion.document, path)
     with timer("contents"):
         remove_contents_and_index(conversion.document)
+    with timer("running_heads"):
+        remove_running_heads(conversion.document)
     with timer("missed_pictures"):
         add_missed_pictures(conversion.document, path)
     with timer("figure_labels"):
@@ -70,6 +76,8 @@ def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
         blocks = mark_exponents(blocks, path)
     with timer("order"):
         blocks = order_by_position(blocks, conversion.document)
+    with timer("labels"):
+        blocks = theorem_labels(drop_blank_page_notes(blocks))
     with timer("slides"):
         blocks = as_slides(blocks, conversion.document)
     with timer("line_breaks"):
