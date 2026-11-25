@@ -127,6 +127,10 @@ def restore_code_lines(blocks: Sequence[Block], doc: DoclingDocument, path: Path
             out += new
     finally:
         pdf.close()
+    empty = sum(not b.text for b in out)
+    if empty:                                            # the contract refuses an empty text: the whole file would fail
+        logger.warning("code listings: %d pieces with no text left were dropped", empty)
+        out = [b for b in out if b.text]
     logger.info("code listings: %d rebuilt from the PDF text layer, %d with sentences taken out, %d of only "
                 "sentences; %d paragraphs, list items or formulas with code-font lines; %d regions Docling cut into "
                 "overlapping items", counts["rebuilt"], counts["split"], counts["sentences"], counts["text"],
@@ -571,9 +575,14 @@ def _line_kind(line: list[_Char], width: float) -> str:
     with a note beside it ("total = 42.5  <- the sum so far"). Otherwise a line is a
     sentence when a fifth or more of its letters and digits are in an ordinary font: a sentence can be full of code
     words ("calls update() and draw() again and again. The run() method"),
-    while a line of code has none in an ordinary font, or only an answer's number ("13. cout << setw(10);"). A line
-    of unknown fonts stays code."""
-    letters = [c for c in line if c.text.isalnum()]
+    while a line of code has none in an ordinary font, or only an answer's number ("13. cout << setw(10);"). A
+    listing's line number does not count: a bare number at the start of the line, in an ordinary font
+    (DataStructures.pdf pages 36 and 38: "16 }" was a sentence, and an empty line, only its number "2", one with no
+    text at all); an answer's "16." keeps its period and counts. A line of unknown fonts stays code."""
+    first_word = _words(line, width)[:1]                 # a listing's line number: "16" in the text font
+    skip = len(first_word[0]) if first_word and first_word[0].isdigit() and \
+        all(c.fixed is False for c in line[:len(first_word[0])]) else 0
+    letters = [c for c in line[skip:] if c.text.isalnum()]
     fixed = sum(c.fixed is True for c in letters)
     ordinary = sum(c.fixed is False for c in letters)
     first = 1                                            # characters in the line's first piece

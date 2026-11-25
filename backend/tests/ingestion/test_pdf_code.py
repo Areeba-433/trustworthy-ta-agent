@@ -146,6 +146,21 @@ def test_sentences_between_two_pieces_of_code_leave_the_listing(listing_pdf):
         ("paragraph", "is safer than"), ("code", "enum Mode{ ON, OFF };")]
 
 
+def test_a_listing_s_line_numbers_in_the_text_font_keep_it_one_code_block(listing_pdf):
+    """DataStructures.pdf pages 36 and 38: the listing's line numbers are printed in the text font, the code in a
+    fixed-width one. An empty line of code shows only its number, and a short line ("16 }") has more digits than
+    code: both were taken for sentences, and the empty line came out as a block with no text, which the contract
+    refuses (303 such blocks made the whole 654-page book fail). Digits do not count: the listing stays one block."""
+    lines = LISTING + [("sentence", "12"), ("inline", "13 ", "return storedValue;"), ("inline", "14 ", "}")]
+    path, box = listing_pdf(lines)
+    doc = book(squashed(LISTING) + " 12 13 return storedValue; 14 }", box)
+    blocks = restore_code_lines(to_blocks(doc, "pdf", "Book"), doc, path)
+    assert all(b.text for b in blocks)
+    assert [b.kind for b in blocks] == ["code"]
+    assert [" ".join(line.split()) for line in blocks[0].text.split("\n")[-3:]] == [
+        "12", "13 return storedValue;", "14 }"]
+
+
 def test_a_note_beside_program_output_stays_with_it_and_keeps_its_gap(listing_pdf):
     """Book page 348: the output "c1=0" with the author's note beside it, in the text font. The line starts in the
     code font, so it stays code, and the note stays in its column."""
