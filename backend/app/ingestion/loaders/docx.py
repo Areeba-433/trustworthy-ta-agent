@@ -5,10 +5,12 @@
 Docling reads the text; python-docx reads the facts Docling misses (styles, fonts, hidden runs, content
 controls), and docx_flowchart.py reads shapes and arrows. The rules run in this order:
 
+ 0. _drop_table_echoes the words of formatted table cells, which Docling repeats after the table, are left out
  1. _drop_word_extras  the table of contents and the cover page are left out
  2. _drop_hidden_text  text set to Hidden in Word is left out
  3. _mark_code         runs of monospace paragraphs become one code block, with Word's exact spacing
- 4. _join_scripts      superscript and subscript are written out (O(n^2), H_2O) in one block
+ 4. _join_paragraphs   a paragraph Docling cut at a link, a bold word or an equation is one block again;
+                       superscript and subscript are written out (O(n^2), H_2O)
  5. _mark_captions     Caption-style paragraphs become captions and take the id of the picture next to them
  6. _promote_titles    in a file without heading styles, bold title lines become headings
  7. _add_flowcharts    a flowchart drawn with shapes becomes one figure_text block listing its arrows
@@ -26,7 +28,7 @@ from docx import Document as WordDocument
 from docx.enum.style import WD_STYLE_TYPE
 from docx.oxml.ns import nsmap, qn
 from docx.text.paragraph import Paragraph
-from docling_core.types.doc import DoclingDocument, GroupItem
+from docling_core.types.doc import DoclingDocument, GroupItem, TableItem
 
 from app.ingestion.cleaning.common import clean_text, detect_lang, title_from_filename
 from app.ingestion.contract import Block, ParsedDocument, ResourceMeta
@@ -53,6 +55,7 @@ _NOT_CODE_STYLE = re.compile(r"heading|title|caption|toc|list")
 _RUN_SCRIPT = f'{qn("w:rPr")}/{qn("w:vertAlign")}'           # superscript / subscript
 _SCRIPT_MARK = {"superscript": "^", "subscript": "_"}       # O(n^2), H_2O: how a raised or lowered run is written
 _SCRIPT_SLACK = 3                           # letters: the raised/lowered text Docling may leave out, per gap
+_JOIN_LOOKAHEAD = 60                        # blocks: how far ahead a Word paragraph's pieces are looked for
 _RUN_BOLD, _RUN_SIZE = f'{qn("w:rPr")}/{qn("w:b")}', f'{qn("w:rPr")}/{qn("w:sz")}'
 _OUTLINE = f'{qn("w:pPr")}/{qn("w:outlineLvl")}'
 _TITLE_WORDS = 12                          # a bold title line is short
@@ -71,7 +74,8 @@ class _WordFacts(NamedTuple):
     visible: dict[str, str]         # text of a paragraph with hidden words -> the same text without them
     code: list[list[str]]           # runs of paragraphs set in a monospace font, line by line as Word shows them
     titles: list[tuple[str, int]]   # bold title lines (key, level), only for a file without any heading style
-    scripts: list[str]              # paragraphs with superscript or subscript, written out: "O(n^2) time"
+    paragraphs: list[tuple[str, str | None]]   # each body paragraph: (its letters, its text written out with ^ and _
+                                               # when it has superscript or subscript, else None)
 
 
 def _norm(text: str) -> str:
@@ -202,7 +206,7 @@ def _bold_share_and_size(paragraph, style, styles_by_id: dict) -> tuple[float, f
 
 
 def _word_facts(path: Path) -> _WordFacts:
-    empty = _WordFacts(captions=Counter(), skipped=Counter(), visible={}, code=[], titles=[], scripts=[])
+    empty = _WordFacts(captions=Counter(), skipped=Counter(), visible={}, code=[], titles=[], paragraphs=[])
     try:
         word = WordDocument(str(path))
     except Exception:
@@ -215,7 +219,7 @@ def _word_facts(path: Path) -> _WordFacts:
     has_headings = False
     title_lines: list[tuple[str, float]] = []    # (key, font size) of bold title lines
     styles_by_id = {style.style_id: style for style in word.styles}
-    scripts: list[str] = []
+    paragraphs: list[tuple[str, str | None]] = []
 
     def end_code_run() -> None:
         while lines and not lines[-1].strip():
@@ -245,8 +249,8 @@ def _word_facts(path: Path) -> _WordFacts:
         # Code is a paragraph, not a heading, caption or list item, (nearly) all in a monospace font.
         if any(True for _ in element.iterancestors(qn("w:tc"), qn("w:txbxContent"))):
             continue
-        if (written := _script_text(element)) is not None:
-            scripts.append(written)
+        if letters := _letters(_run_text(element, keep_hidden=False)):
+            paragraphs.append((letters, _script_text(element)))
         raw = _run_text(element, keep_hidden=False)
         paragraph_font = _style_font(style)
         mono = total = 0
@@ -284,7 +288,7 @@ def _word_facts(path: Path) -> _WordFacts:
         sizes = sorted({size for _, size in title_lines}, reverse=True)
         titles = [(key, min(sizes.index(size) + 1, _TITLE_LEVELS)) for key, size in title_lines]
     return _WordFacts(captions=captions, skipped=skipped, visible=visible, code=code, titles=titles,
-                      scripts=scripts)
+                      paragraphs=paragraphs)
 
 
 def _drop_word_extras(blocks: list[Block], skipped: Counter[str]) -> list[Block]:
@@ -372,41 +376,83 @@ def _letters(text: str) -> str:
     return "".join(ch for ch in text.casefold() if ch.isalnum())
 
 
-def _script_span(blocks: list[Block], first: int, whole: str) -> int:
-    """How many blocks from `first` make up the paragraph whose letters are `whole`, allowing a few left-out
-    letters between them (the raised or lowered text); 0 if they don't."""
+def _paragraph_span(blocks: list[Block], first: int, whole: str, slack: int) -> int:
+    """How many blocks from `first` make up the Word paragraph whose letters are `whole`; 0 if they don't.
+
+    An equation inside the sentence comes as a formula block between two pieces (its letters are not in Word's
+    run text). `slack` letters may be missing between pieces: a superscript "2" the cleaner dropped.
+    """
     end = 0
     for count, block in enumerate(blocks[first:], start=1):
+        if block.kind == "formula" and count > 1:
+            continue
         piece = _letters(block.text)
-        if block.kind not in ("paragraph", "list_item") or not piece:
+        allowed = ("paragraph", "list_item", "heading", "caption") if count == 1 else ("paragraph", "list_item")
+        if block.kind not in allowed or not piece:       # a heading or caption is matched only whole, to keep step
             return 0
-        at = 0 if whole.startswith(piece) and count == 1 else whole.find(piece, end) if count > 1 else -1
-        if at < 0 or at - end > _SCRIPT_SLACK:
+        at = (0 if whole.startswith(piece) else -1) if count == 1 else whole.find(piece, end)
+        if at < 0 or at - end > slack:
             return 0
         end = at + len(piece)
-        if len(whole) - end <= _SCRIPT_SLACK:
+        if len(whole) - end <= slack:
             return count
     return 0
 
 
-def _join_scripts(blocks: list[Block], scripts: list[str]) -> list[Block]:
-    """Put back superscript and subscript: "O(n^2)", not "O(n" + ") ..." with the 2 lost.
+def _joined(pieces: list[Block]) -> str:
+    """The pieces' own text as one sentence: an equation as $...$, no space before . , ; : ) or after (."""
+    out = ""
+    for block in pieces:
+        text = f"${block.text}$" if block.kind == "formula" else block.text
+        if out and text[0] not in ".,;:!?)]}" and out[-1] not in "([{":
+            out += " "
+        out += text
+    return out
 
-    Docling cuts a paragraph where a run is raised or lowered, and the cleaner then drops a piece that is only
-    "2" or ".", so "O(n2)" came back as two blocks reading "O(n" and ") real superscript run." The pieces are
-    found by their letters and replaced by one block with Word's text, written with ^ and _.
+
+def _join_paragraphs(blocks: list[Block], paragraphs: list[tuple[str, str | None]]) -> list[Block]:
+    """Make each Word paragraph that Docling cut into pieces one block again.
+
+    Docling starts a new piece wherever the formatting changes inside a sentence: a link, a bold label
+    ("Funding:" + "None."), an inline equation, a superscript. Each piece became its own block, and a piece
+    that is only "2" or "." was dropped by the cleaner, so "O(n2)" read "O(n" + ") time". Word's paragraphs
+    are matched to the blocks in order by their letters; the pieces are joined with their own text (links
+    and equations keep Docling's form), and a paragraph with superscript or subscript takes Word's text,
+    written with ^ and _. A paragraph that is already one block is left as it is.
     """
     out = list(blocks)
     start = 0
-    for written in scripts:
-        whole = _letters(written)
-        for first in range(start, len(out)):
-            span = _script_span(out, first, whole)
-            if span:
-                out[first:first + span] = [out[first].model_copy(update={"text": written})]
-                start = first + 1
-                break
+    for whole, written in paragraphs:
+        for first in range(start, min(start + _JOIN_LOOKAHEAD, len(out))):
+            span = _paragraph_span(out, first, whole, _SCRIPT_SLACK if written else 0)
+            if not span:
+                continue
+            joinable = out[first].kind in ("paragraph", "list_item")
+            if joinable and (span > 1 or (written and written != out[first].text)):
+                text = written or _joined(out[first:first + span])
+                out[first:first + span] = [out[first].model_copy(update={"text": text})]
+            start = first + 1
+            break
     return out
+
+
+def _table_cell_refs(doc: DoclingDocument) -> set[str]:
+    """Ids of the texts Docling keeps under a table: the formatted words of a cell, already in the table."""
+    refs: set[str] = set()
+    for item in doc.texts:
+        node = item
+        while node.parent is not None:
+            node = node.parent.resolve(doc)
+            if isinstance(node, TableItem):
+                refs.add(item.self_ref)
+                break
+    return refs
+
+
+def _drop_table_echoes(blocks: list[Block], cell_refs: set[str]) -> list[Block]:
+    """Docling keeps a formatted cell (bold "S1H1") both in the table and as a text under it, so the cell's
+    words came out again as paragraphs after the table. The table block already holds them."""
+    return [b for b in blocks if b.kind in ("table", "figure") or b.extra.get("ref") not in cell_refs]
 
 
 def _mark_captions(blocks: list[Block], captions: Counter[str]) -> list[Block]:
@@ -546,10 +592,11 @@ def load(path: Path, meta: ResourceMeta) -> ParsedDocument:
         facts = _word_facts(path)
     with timer("docx_blocks"):
         blocks = to_blocks(conversion.document, "docx", title)
+        blocks = _drop_table_echoes(blocks, _table_cell_refs(conversion.document))
         blocks = _drop_word_extras(blocks, facts.skipped)
         blocks = _drop_hidden_text(blocks, facts.visible)
         blocks = _mark_code(blocks, facts.code)
-        blocks = _join_scripts(blocks, facts.scripts)
+        blocks = _join_paragraphs(blocks, facts.paragraphs)
         blocks = _mark_captions(blocks, facts.captions)
         blocks = _promote_titles(blocks, facts.titles, title)
     with timer("docx_flowcharts"):
