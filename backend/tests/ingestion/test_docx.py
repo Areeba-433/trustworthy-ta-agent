@@ -9,7 +9,8 @@ from docx.shared import Pt
 from PIL import Image, ImageDraw
 from app.ingestion import messages
 from app.ingestion.contract import Block, Location
-from app.ingestion.loaders.docx import (_add_flowcharts, _drop_word_extras, _join_scripts, _link_captions,
+from app.ingestion.loaders.docx import (_add_flowcharts, _drop_table_echoes, _drop_word_extras, _join_paragraphs,
+                                        _link_captions,
                                         _mark_captions, _mark_code, _promote_titles)
 from app.ingestion.loaders.docx_flowchart import HEADER as FLOWCHART_HEADER
 from app.ingestion.loaders.docx_flowchart import Flowchart, read_flowcharts
@@ -354,13 +355,57 @@ def test_superscript_and_subscript_are_written_out_in_one_block(make_docx, data_
                           "A plain line."]
 
 
-def test_join_scripts_puts_the_pieces_docling_cut_back_together():
+def _letters_of(text):
+    return "".join(ch for ch in text.casefold() if ch.isalnum())
+
+
+def test_join_paragraphs_puts_the_pieces_docling_cut_back_together():
     blocks = [_block("Intro."), _block("SUP_REAL: O(n"), _block(") real superscript run."),
-              _block("SUP_POWER: 2"), _block("n"), _block("grows faster than n"), _block("Next.")]
-    out = _join_scripts(blocks, ["SUP_REAL: O(n^2) real superscript run.",
-                                 "SUP_POWER: 2^n grows faster than n^3."])
+              _block("SUP_POWER: 2"), _block("n"), _block("grows faster than n"),
+              _block("Read the"), _block("course page"), _block(", then"), _block("x^2", "formula"), _block("is shown."),
+              _block("Next.")]
+    paragraphs = [(_letters_of("Intro."), None),
+                  (_letters_of("SUP_REAL: O(n2) real superscript run."), "SUP_REAL: O(n^2) real superscript run."),
+                  (_letters_of("SUP_POWER: 2n grows faster than n3."), "SUP_POWER: 2^n grows faster than n^3."),
+                  (_letters_of("Read the course page, then  is shown."), None),       # the equation is not run text
+                  (_letters_of("Next."), None)]
+    out = _join_paragraphs(blocks, paragraphs)
     assert [b.text for b in out] == ["Intro.", "SUP_REAL: O(n^2) real superscript run.",
-                                     "SUP_POWER: 2^n grows faster than n^3.", "Next."]
+                                     "SUP_POWER: 2^n grows faster than n^3.",
+                                     "Read the course page, then $x^2$ is shown.", "Next."]
+
+
+def test_paragraphs_already_in_one_block_and_headings_are_left_alone():
+    blocks = [_block("Arrays", "heading"), _block("Arrays store items."), _block("A second line.")]
+    paragraphs = [(_letters_of("Arrays"), None), (_letters_of("Arrays store items."), None),
+                  (_letters_of("A second line."), None)]
+    assert _join_paragraphs(blocks, paragraphs) == blocks
+
+
+def test_formatted_table_cells_repeated_after_the_table_are_dropped():
+    def block(ref, text, kind="paragraph"):
+        return Block(seq=0, kind=kind, text=text, heading_path=["t"], loc=Location(), extra={"ref": ref})
+    blocks = [block("#/tables/0", "| **Name** | **Marks** |", "table"), block("#/texts/1", "Name"),
+              block("#/texts/2", "Marks"), block("#/texts/3", "After the table.")]
+    out = _drop_table_echoes(blocks, {"#/texts/1", "#/texts/2"})
+    assert [b.text for b in out] == ["| **Name** | **Marks** |", "After the table."]
+
+
+def test_a_bold_label_stays_in_its_sentence_and_table_cells_are_not_repeated(make_docx, data_dir, word_tokens):
+    def build(doc):
+        doc.add_heading("Report", 1)
+        table = doc.add_table(rows=2, cols=2)
+        for cell, text in zip(table.rows[0].cells, ("Name", "Marks")):
+            cell.paragraphs[0].add_run(text).bold = True
+        table.rows[1].cells[0].text, table.rows[1].cells[1].text = "Ali", "90"
+        p = doc.add_paragraph()
+        p.add_run("Funding:").bold = True
+        p.add_run(" None.")
+        doc.add_paragraph("End of report.")
+    blocks = process(make_docx(build=build), "w24", "c1").parsed.blocks
+    texts = [b.text for b in blocks if b.kind != "table"]
+    assert "Funding: None." in texts and "End of report." in texts
+    assert "Name" not in texts and "Marks" not in texts            # only inside the table block
 
 
 def test_a_file_of_headings_only_gets_one_chunk_of_its_headings(make_docx, data_dir, word_tokens):
